@@ -74,6 +74,10 @@ def hex_to_rgb(hex_color):
     return [1.0, 0.0, 0.0, 1.0]
 
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, stroke_width=3):
+    """
+    Заменяет текст в текстовых слоях (ty=5) или добавляет новый текстовый слой поверх,
+    копируя параметры времени из первого слоя.
+    """
     text_rgb = hex_to_rgb(text_color_hex)
     stroke_rgb = hex_to_rgb(stroke_color_hex)
 
@@ -84,7 +88,24 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     new_layers = []
     found_text_layer = False
 
-    # Проходим по слоям, ищем текстовый (ty: 5)
+    # Находим первый слой для копирования ip/op/st
+    ref_layer = None
+    for layer in layers:
+        if "ip" in layer and "op" in layer:
+            ref_layer = layer
+            break
+
+    if not ref_layer:
+        logger.warning("Не найден ни один слой с ip/op, использую значения по умолчанию")
+        ip_default = 0
+        op_default = 180
+        st_default = 0
+    else:
+        ip_default = ref_layer.get("ip", 0)
+        op_default = ref_layer.get("op", 180)
+        st_default = ref_layer.get("st", 0)
+        logger.info(f"Использую ip={ip_default}, op={op_default}, st={st_default} из слоя {ref_layer.get('nm', 'unknown')}")
+
     for layer in layers:
         if layer.get("ty") == 5:
             found_text_layer = True
@@ -92,6 +113,10 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
             if "t" in layer and "d" in layer["t"] and "k" in layer["t"]["d"]:
                 if isinstance(layer["t"]["d"]["k"], dict):
                     layer["t"]["d"]["k"]["v"] = new_text
+                # Если это список, берём первый элемент
+                elif isinstance(layer["t"]["d"]["k"], list) and len(layer["t"]["d"]["k"]) > 0:
+                    if isinstance(layer["t"]["d"]["k"][0], dict) and "s" in layer["t"]["d"]["k"][0]:
+                        layer["t"]["d"]["k"][0]["s"]["t"] = new_text
             # Меняем цвет текста
             if "c" in layer and "k" in layer["c"]:
                 layer["c"]["k"] = text_rgb
@@ -121,7 +146,7 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
                             "s": {
                                 "f": "Arial",
                                 "t": new_text,
-                                "j": 1,
+                                "j": 1,  # центр
                                 "tr": 0,
                                 "lh": 80,
                                 "ls": 0,
@@ -134,13 +159,13 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
                     ]
                 }
             },
-            "ip": 0,
-            "op": 180,
-            "st": 0,
+            "ip": ip_default,
+            "op": op_default,
+            "st": st_default,
             "bm": 0
         }
         new_layers.insert(0, text_layer)  # вставляем в самое начало (поверх всех)
-        logger.info("Добавлен новый текстовый слой поверх всех (векторные слои сохранены)")
+        logger.info("Добавлен новый текстовый слой поверх всех")
         data["layers"] = new_layers
         return data, True
 
@@ -165,6 +190,7 @@ def generate_preview(background_color, text, text_color, stroke_color, stroke_wi
     buf.seek(0)
     return buf
 
+# ===== КЛАВИАТУРЫ =====
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Шаблоны", callback_data="list")],
@@ -208,6 +234,7 @@ def admin_kb():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main")]
     ])
 
+# ===== ОБРАБОТЧИКИ (без изменений) =====
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     user_id = str(message.from_user.id)
@@ -356,7 +383,7 @@ async def show_preview(event, state):
     if replaced:
         caption += "✅ Текст добавлен/обновлён"
     else:
-        caption += "⚠️ Не найден текстовый слой, но текст будет наложен поверх"
+        caption += "⚠️ Найден текстовый слой, но он не изменён"
     
     await event.message.answer_photo(
         types.BufferedInputFile(preview_img.getvalue(), filename="preview.png"),
@@ -401,6 +428,7 @@ async def process_payment(callback: CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.answer()
 
+# ===== БАЛАНС И ПОПОЛНЕНИЕ =====
 @dp.callback_query(F.data == "balance")
 async def show_balance(callback: CallbackQuery):
     user_id = int(callback.from_user.id)
@@ -414,6 +442,7 @@ async def topup(callback: CallbackQuery):
     await callback.message.edit_text("⭐ Пополнение через звёзды временно отключено.\nИспользуй /add_balance", reply_markup=main_kb())
     await callback.answer()
 
+# ===== АДМИН-ПАНЕЛЬ =====
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: CallbackQuery):
     if callback.from_user.id not in ADMINS:
@@ -462,6 +491,7 @@ async def admin_add_lottie(callback: CallbackQuery):
     await callback.message.edit_text("📥 Отправь мне JSON-файл с шаблоном.")
     await callback.answer()
 
+# ===== АДМИН-КОМАНДЫ =====
 @dp.message(Command("add_balance"))
 async def add_balance(message: Message):
     if message.from_user.id not in ADMINS:
@@ -547,7 +577,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ НАКЛАДЫВАЕТСЯ ПОВЕРХ, ДЕКОРАЦИИ СОХРАНЯЮТСЯ.")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ДОБАВЛЯЕТСЯ ПОВЕРХ С ПРАВИЛЬНЫМИ ПАРАМЕТРАМИ ВРЕМЕНИ.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
