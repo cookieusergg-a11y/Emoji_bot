@@ -115,7 +115,7 @@ def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
     else:
         return obj
 
-# ===== ФУНКЦИИ ДЛЯ ТЕКСТА (МИНИМАЛЬНОЕ ВМЕШАТЕЛЬСТВО) =====
+# ===== ФУНКЦИИ ДЛЯ ТЕКСТА =====
 def remove_all_text_layers(layers):
     """Удаляем только текстовые слои, остальное не трогаем."""
     new_layers = []
@@ -127,7 +127,7 @@ def remove_all_text_layers(layers):
     return new_layers
 
 def ensure_fonts(data, font_name):
-    """Добавляем шрифт с origin: system."""
+    """Добавляет системный шрифт Arial (стиль Bold) вне зависимости от переданного имени."""
     if "fonts" not in data:
         data["fonts"] = {"list": []}
     if not isinstance(data["fonts"], dict):
@@ -135,27 +135,34 @@ def ensure_fonts(data, font_name):
     if "list" not in data["fonts"]:
         data["fonts"]["list"] = []
     
+    # Всегда используем Arial как имя шрифта, а стиль храним отдельно
+    font_family = "Arial"
+    font_style = "Bold"  # можно сделать динамическим, но пока так
+    
     for f in data["fonts"]["list"]:
-        if f.get("name") == font_name:
+        if f.get("name") == font_family and f.get("style") == font_style:
             return data
     
     data["fonts"]["list"].append({
-        "name": font_name,
-        "id": font_name,
-        "family": font_name.split("-")[0] if "-" in font_name else font_name,
-        "style": "Bold" if "Bold" in font_name else "Regular",
+        "name": font_family,
+        "id": font_family,
+        "family": font_family,
+        "style": font_style,
         "origin": "system"
     })
     return data
 
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
-    """Добавляем текст в КОНЕЦ (поверх всех) с нормальным размером."""
+    """Добавляет текстовый слой с системным шрифтом Arial."""
     center_x = width / 2.0
     center_y = height / 2.0
-    font_size = 250
+    font_size = 300
     line_height = font_size
     stroke_width = 3
     scale = 100
+
+    # Игнорируем font_name, всегда используем "Arial" (системный)
+    actual_font = "Arial"
 
     ref_layer = None
     for layer in layers:
@@ -184,7 +191,7 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
                 "k": [
                     {
                         "s": {
-                            "f": font_name,
+                            "f": actual_font,          # Всегда Arial
                             "t": new_text,
                             "j": 1,
                             "tr": 0,
@@ -218,10 +225,22 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     if "layers" in data:
         width = data.get("w", 512)
         height = data.get("h", 512)
+        # Удаляем все старые текстовые слои (если есть)
         data["layers"] = remove_all_text_layers(data["layers"])
+        # Добавляем новый текстовый слой в конец
         data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name, width, height)
 
+    # Добавляем шрифты с правильным именем
     data = ensure_fonts(data, font_name)
+
+    # === ОТЛАДКА: сохраняем JSON на диск ===
+    try:
+        with open("debug_output.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        logger.info("✅ debug_output.json сохранён — проверь, есть ли там текстовый слой")
+    except Exception as e:
+        logger.warning(f"Не удалось сохранить debug: {e}")
+
     return data, True
 
 # ===== ПРЕВЬЮ =====
@@ -336,7 +355,7 @@ async def select_font(callback: CallbackQuery):
     font_name = callback.data.split("_")[1]
     if user_id not in user_states:
         user_states[user_id] = {"step": "text"}
-    user_states[user_id]["font"] = font_name
+    user_states[user_id]["font"] = font_name  # сохраняем, но не используем
     user_states[user_id]["step"] = "text"
     await callback.message.edit_text("✏️ Введи текст (до 20 символов):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -467,7 +486,7 @@ async def show_preview(event, state):
     caption = (
         f"📸 Предпросмотр:\n"
         f"Текст: {state['text']}\n"
-        f"Шрифт: {font_name}\n"
+        f"Шрифт: Arial (системный)\n"
         f"Цвет текста: {state['text_color']}\n"
         f"Цвет заливки: {state['fill_color']}\n"
         f"Цвет обводки: {state['stroke_color']}\n"
@@ -671,7 +690,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ИСПРАВЛЕН (добавлен origin, текст в конце списка)")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ДОБАВЛЯЕТСЯ С СИСТЕМНЫМ ШРИФТОМ ARIAL, ОТЛАДКА В debug_output.json")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
