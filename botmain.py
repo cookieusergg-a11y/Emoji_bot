@@ -9,8 +9,6 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeybo
 from aiogram.filters import Command
 from PIL import Image, ImageDraw, ImageFont
 import asyncio
-import random
-import string
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -94,22 +92,16 @@ def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
     if isinstance(obj, dict):
         is_fill = 'fill' in str(obj).lower() or 'fl' in str(obj).lower()
         is_stroke = 'stroke' in str(obj).lower() or 'st' in str(obj).lower()
-        is_text = obj.get('ty') == 5
-
         new_obj = {}
         for key, value in obj.items():
             if is_color_list(value):
-                if is_text:
-                    new_obj[key] = text_rgb
-                elif is_stroke:
+                if is_stroke:
                     new_obj[key] = stroke_rgb
                 else:
                     new_obj[key] = fill_rgb
                 logger.info(f"Заменён цвет в поле {key}")
             elif isinstance(value, dict) and 'k' in value and is_color_list(value['k']):
-                if is_text:
-                    value['k'] = text_rgb
-                elif is_stroke:
+                if is_stroke:
                     value['k'] = stroke_rgb
                 else:
                     value['k'] = fill_rgb
@@ -123,33 +115,46 @@ def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
     else:
         return obj
 
-def is_logo_layer(layer):
-    """Проверяет, является ли слой логотипом/водяным знаком."""
-    if "nm" not in layer:
-        return False
-    name = layer["nm"].lower()
-    keywords = ["logo", "watermark", "brand", "mark", "starlit", "shop", "vpn"]
-    return any(kw in name for kw in keywords)
-
-def remove_letter_and_logo_layers(layers):
-    """Удаляет векторные слои-буквы и слои с логотипами."""
+# ===== НОВАЯ ФУНКЦИЯ УДАЛЕНИЯ ВСЕХ ТЕКСТОВЫХ СЛОЁВ =====
+def remove_all_text_layers(layers):
+    """Удаляет ВСЕ текстовые слои (ty==5), чтобы не мешали."""
     new_layers = []
     for layer in layers:
-        # Удаляем буквы (один символ)
-        if layer.get("ty") == 4 and "nm" in layer:
-            name = layer["nm"].strip()
-            if len(name) == 1 and name.isalnum():
-                logger.info(f"Удалён слой-буква: {name}")
-                continue
-        # Удаляем логотипы
-        if is_logo_layer(layer):
-            logger.info(f"Удалён логотип: {layer.get('nm')}")
+        if layer.get("ty") == 5:
+            logger.info(f"Удалён текстовый слой: {layer.get('nm', 'без имени')}")
             continue
         new_layers.append(layer)
     return new_layers
 
+# ===== ДОБАВЛЕНИЕ ШРИФТОВ В КОРЕНЬ =====
+def ensure_fonts(data, font_name):
+    if "fonts" not in data:
+        data["fonts"] = {}
+    if isinstance(data["fonts"], dict):
+        if "list" not in data["fonts"]:
+            data["fonts"]["list"] = []
+        existing = [f for f in data["fonts"]["list"] if f.get("name") == font_name]
+        if not existing:
+            data["fonts"]["list"].append({
+                "name": font_name,
+                "id": font_name,
+                "family": font_name.split("-")[0] if "-" in font_name else font_name,
+                "style": "Bold" if "Bold" in font_name else "Regular"
+            })
+    elif isinstance(data["fonts"], list):
+        existing = [f for f in data["fonts"] if f.get("name") == font_name]
+        if not existing:
+            data["fonts"].append({
+                "name": font_name,
+                "id": font_name,
+                "family": font_name.split("-")[0] if "-" in font_name else font_name,
+                "style": "Bold" if "Bold" in font_name else "Regular"
+            })
+    return data
+
+# ===== ДОБАВЛЕНИЕ ТЕКСТОВОГО СЛОЯ (С РАЗМЕРОМ) =====
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold"):
-    """Добавляет текстовый слой поверх всех с большим шрифтом и обводкой."""
+    """Добавляет текстовый слой с крупным шрифтом и обводкой."""
     ref_layer = None
     for layer in layers:
         if "ip" in layer and "op" in layer:
@@ -162,13 +167,15 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
     else:
         ip, op, st = 0, 180, 0
 
+    center_x, center_y = 256, 256
+
     text_layer = {
         "ty": 5,
         "nm": "Generated Text",
         "ks": {
             "o": {"a": 0, "k": 100},
             "r": {"a": 0, "k": 0},
-            "p": {"a": 0, "k": [256, 256, 0]},
+            "p": {"a": 0, "k": [center_x, center_y, 0]},
             "a": {"a": 0, "k": [0, 0, 0]},
             "s": {"a": 0, "k": [100, 100, 100]}
         },
@@ -177,15 +184,16 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
                 "k": [
                     {
                         "s": {
-                            "f": font_name,   # Жирный шрифт
+                            "f": font_name,
                             "t": new_text,
-                            "j": 1,          # Центр
+                            "j": 1,
                             "tr": 0,
-                            "lh": 120,       # Высота строки (размер шрифта)
+                            "lh": 120,
                             "ls": 0,
+                            "s": 120,          # РАЗМЕР ШРИФТА
                             "fc": text_rgb,
                             "sc": stroke_rgb,
-                            "sw": 5,         # Толщина обводки 5
+                            "sw": 5,
                             "of": 0
                         }
                     }
@@ -200,43 +208,34 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
     layers.insert(0, text_layer)
     return layers
 
+# ===== ГЛАВНАЯ ФУНКЦИЯ ЗАМЕНЫ =====
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
     text_rgb = hex_to_rgb(text_color_hex)
     fill_rgb = hex_to_rgb(fill_color_hex)
     stroke_rgb = hex_to_rgb(stroke_color_hex)
 
-    # Заменяем все цвета
     data = find_and_replace_colors(data, text_rgb, fill_rgb, stroke_rgb)
 
-    # Удаляем буквы и логотипы, добавляем текстовый слой
     if "layers" in data:
-        data["layers"] = remove_letter_and_logo_layers(data["layers"])
+        data["layers"] = remove_all_text_layers(data["layers"])
         data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name)
 
+    data = ensure_fonts(data, font_name)
     return data, True
 
-# ===== КРАСИВОЕ ПРЕВЬЮ (с крупным текстом) =====
+# ===== КРАСИВОЕ ПРЕВЬЮ =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
-
-    # Тень
     for i in range(5):
         draw.text((256 + i, 256 + i), text, font=get_font(120), fill=(0, 0, 0, 100), anchor="mm")
-
-    # Обводка (толще)
     if stroke_color:
         for dx in range(-5, 6):
             for dy in range(-5, 6):
                 if dx != 0 or dy != 0:
                     draw.text((256 + dx, 256 + dy), text, font=get_font(120), fill=stroke_color, anchor="mm")
-
-    # Основной текст
     draw.text((256, 256), text, font=get_font(120), fill=text_color, anchor="mm")
-
-    # Рамка
     draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=3)
-
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
@@ -248,7 +247,7 @@ def get_font(size):
     except:
         return ImageFont.load_default()
 
-# ===== КЛАВИАТУРЫ (без изменений) =====
+# ===== КЛАВИАТУРЫ =====
 def main_kb(user_id):
     kb = [
         [InlineKeyboardButton(text="✨ Создать эмодзи", callback_data="create")],
@@ -302,8 +301,7 @@ def admin_kb():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main")]
     ])
 
-# ===== ОБРАБОТЧИКИ (почти без изменений, только font_name по умолчанию = Arial-Bold) =====
-
+# ===== ОБРАБОТЧИКИ =====
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     user_id = str(message.from_user.id)
@@ -361,7 +359,7 @@ async def select_template(callback: CallbackQuery):
         await callback.answer("❌ Нет такого")
         return
     if user_id not in user_states:
-        user_states[user_id] = {"step": "text", "font": "Arial-Bold"}  # по умолчанию жирный
+        user_states[user_id] = {"step": "text", "font": "Arial-Bold"}
     user_states[user_id]["template"] = num
     user_states[user_id]["step"] = "text"
     await callback.message.edit_text("✏️ Введи текст (до 20 символов):",
@@ -649,7 +647,7 @@ async def unban_user(message: Message):
     save_db(db)
     await message.answer(f"✅ Пользователь {uid} разбанен")
 
-@dp.message(F.document, Command("add_lottie"))
+@dp.message(F.document)
 async def add_lottie(message: Message):
     if int(message.from_user.id) != ADMIN_ID:
         return
@@ -672,7 +670,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! РАЗМЕР ТЕКСТА УВЕЛИЧЕН, ЛОГОТИПЫ УДАЛЯЮТСЯ.")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ИСПРАВЛЕН (размер + шрифты + удаление всех текстовых слоёв)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
