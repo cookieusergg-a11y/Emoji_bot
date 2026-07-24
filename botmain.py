@@ -80,41 +80,25 @@ def hex_to_rgb(hex_color):
         return [r, g, b, 1.0]
     return [1.0, 0.0, 0.0, 1.0]
 
-# ===== УНИВЕРСАЛЬНЫЙ ПАРСЕР ЦВЕТОВ =====
-def is_color_list(val):
-    if not isinstance(val, list):
-        return False
-    if len(val) not in (3, 4):
-        return False
-    return all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in val[:3])
-
-def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
+# ===== РЕКУРСИВНОЕ УДАЛЕНИЕ МАСОК =====
+def remove_masks_recursive(obj):
     if isinstance(obj, dict):
-        is_fill = 'fill' in str(obj).lower() or 'fl' in str(obj).lower()
-        is_stroke = 'stroke' in str(obj).lower() or 'st' in str(obj).lower()
-        new_obj = {}
+        if "masks" in obj:
+            del obj["masks"]
+            logger.info("Удалены маски из объекта")
+        # Принудительная непрозрачность для ключей "o" и "op"
+        if "o" in obj and isinstance(obj["o"], dict) and "k" in obj["o"]:
+            obj["o"]["k"] = 100
+        if "op" in obj:
+            obj["op"] = 100
         for key, value in obj.items():
-            if is_color_list(value):
-                if is_stroke:
-                    new_obj[key] = stroke_rgb
-                else:
-                    new_obj[key] = fill_rgb
-                logger.info(f"Заменён цвет в поле {key}")
-            elif isinstance(value, dict) and 'k' in value and is_color_list(value['k']):
-                if is_stroke:
-                    value['k'] = stroke_rgb
-                else:
-                    value['k'] = fill_rgb
-                new_obj[key] = value
-                logger.info(f"Заменён цвет в поле {key}.k")
-            else:
-                new_obj[key] = find_and_replace_colors(value, text_rgb, fill_rgb, stroke_rgb)
-        return new_obj
+            remove_masks_recursive(value)
     elif isinstance(obj, list):
-        return [find_and_replace_colors(item, text_rgb, fill_rgb, stroke_rgb) for item in obj]
-    else:
-        return obj
+        for item in obj:
+            remove_masks_recursive(item)
+    return obj
 
+# ===== УДАЛЕНИЕ ВСЕХ ТЕКСТОВЫХ СЛОЁВ =====
 def remove_all_text_layers(layers):
     new_layers = []
     for layer in layers:
@@ -124,20 +108,7 @@ def remove_all_text_layers(layers):
         new_layers.append(layer)
     return new_layers
 
-# ===== НОВАЯ ФУНКЦИЯ: УДАЛЕНИЕ МАСОК И ПРИНУДИТЕЛЬНАЯ НЕПРОЗРАЧНОСТЬ =====
-def remove_masks_and_force_opacity(layers):
-    for layer in layers:
-        if "masks" in layer:
-            del layer["masks"]
-            logger.info(f"Удалены маски у слоя {layer.get('nm', 'без имени')}")
-        # Непрозрачность
-        if "ks" in layer and "o" in layer["ks"]:
-            layer["ks"]["o"] = {"a": 0, "k": 100}
-        if "o" in layer:
-            layer["o"] = 100
-    return layers
-
-# ===== ИСПРАВЛЕННАЯ ensure_fonts (добавлен origin) =====
+# ===== ДОБАВЛЕНИЕ ШРИФТОВ =====
 def ensure_fonts(data, font_name):
     if "fonts" not in data:
         data["fonts"] = {"list": []}
@@ -146,30 +117,28 @@ def ensure_fonts(data, font_name):
     if "list" not in data["fonts"]:
         data["fonts"]["list"] = []
     
-    # Проверяем, есть ли уже такой шрифт
     for f in data["fonts"]["list"]:
         if f.get("name") == font_name:
             return data
     
-    # Добавляем шрифт с origin system
     data["fonts"]["list"].append({
         "name": font_name,
         "id": font_name,
         "family": font_name.split("-")[0] if "-" in font_name else font_name,
         "style": "Bold" if "Bold" in font_name else "Regular",
-        "origin": "system"   # <-- ЭТО ВАЖНО
+        "origin": "system"
     })
     return data
 
-# ===== ИСПРАВЛЕННАЯ add_text_layer (огромный текст) =====
+# ===== ДОБАВЛЕНИЕ ТЕКСТОВОГО СЛОЯ (В НАЧАЛО!) =====
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
     center_x = width / 2.0
     center_y = height / 2.0
 
-    font_size = 500          # очень крупный
+    font_size = 500
     line_height = font_size
     stroke_width = 5
-    scale = 200              # масштаб 200% — текст займёт всё поле
+    scale = 200  # 200% — чтобы перекрыть всё
 
     ref_layer = None
     for layer in layers:
@@ -219,10 +188,11 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
         "st": st,
         "bm": 0
     }
-    layers.append(text_layer)
+    # ВСТАВЛЯЕМ В НАЧАЛО, ЧТОБЫ БЫТЬ ПОВЕРХ ВСЕХ!
+    layers.insert(0, text_layer)
     return layers
 
-# ===== ГЛАВНАЯ ФУНКЦИЯ ЗАМЕНЫ (с вызовом очистки масок) =====
+# ===== ГЛАВНАЯ ФУНКЦИЯ =====
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
     text_rgb = hex_to_rgb(text_color_hex)
     fill_rgb = hex_to_rgb(fill_color_hex)
@@ -235,15 +205,50 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
         height = data.get("h", 512)
         # 1. Удаляем все старые текстовые слои
         data["layers"] = remove_all_text_layers(data["layers"])
-        # 2. Удаляем маски и ставим непрозрачность 100% у всех оставшихся
-        data["layers"] = remove_masks_and_force_opacity(data["layers"])
-        # 3. Добавляем наш новый текстовый слой поверх всех
+        # 2. Удаляем маски и ставим непрозрачность 100% рекурсивно
+        data = remove_masks_recursive(data)
+        # 3. Добавляем новый текстовый слой В НАЧАЛО (поверх всех)
         data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name, width, height)
 
     data = ensure_fonts(data, font_name)
     return data, True
 
-# ===== ПРЕВЬЮ (без изменений, но увеличено) =====
+# ===== find_and_replace_colors (без изменений) =====
+def is_color_list(val):
+    if not isinstance(val, list):
+        return False
+    if len(val) not in (3, 4):
+        return False
+    return all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in val[:3])
+
+def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
+    if isinstance(obj, dict):
+        is_fill = 'fill' in str(obj).lower() or 'fl' in str(obj).lower()
+        is_stroke = 'stroke' in str(obj).lower() or 'st' in str(obj).lower()
+        new_obj = {}
+        for key, value in obj.items():
+            if is_color_list(value):
+                if is_stroke:
+                    new_obj[key] = stroke_rgb
+                else:
+                    new_obj[key] = fill_rgb
+                logger.info(f"Заменён цвет в поле {key}")
+            elif isinstance(value, dict) and 'k' in value and is_color_list(value['k']):
+                if is_stroke:
+                    value['k'] = stroke_rgb
+                else:
+                    value['k'] = fill_rgb
+                new_obj[key] = value
+                logger.info(f"Заменён цвет в поле {key}.k")
+            else:
+                new_obj[key] = find_and_replace_colors(value, text_rgb, fill_rgb, stroke_rgb)
+        return new_obj
+    elif isinstance(obj, list):
+        return [find_and_replace_colors(item, text_rgb, fill_rgb, stroke_rgb) for item in obj]
+    else:
+        return obj
+
+# ===== ПРЕВЬЮ (увеличено) =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
@@ -267,7 +272,7 @@ def get_font(size):
     except:
         return ImageFont.load_default()
 
-# ===== КЛАВИАТУРЫ (ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ) =====
+# ===== КЛАВИАТУРЫ (БЕЗ ИЗМЕНЕНИЙ) =====
 def main_kb(user_id):
     kb = [
         [InlineKeyboardButton(text="✨ Создать эмодзи", callback_data="create")],
@@ -690,7 +695,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ИСПРАВЛЕН (маски удалены, opacity=100%, шрифт с origin)")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ВСТАВЛЯЕТСЯ В НАЧАЛО СПИСКА (ПОВЕРХ ВСЕХ), МАСКИ УДАЛЕНЫ")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
