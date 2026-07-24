@@ -5,6 +5,7 @@ import re
 import logging
 import io
 import copy
+import base64
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -87,7 +88,6 @@ def is_color_list(val):
     return all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in val[:3])
 
 def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
-    """Рекурсивно заменяет цвета в объекте."""
     if isinstance(obj, dict):
         is_fill = 'fill' in str(obj).lower() or 'fl' in str(obj).lower()
         is_stroke = 'stroke' in str(obj).lower() or 'st' in str(obj).lower()
@@ -123,80 +123,68 @@ def remove_text_layers(layers):
             logger.info(f"Удалён текстовый слой: {layer.get('nm', 'без имени')}")
     return new_layers
 
-def add_text_layer(layers, text, text_rgb, stroke_rgb, width, height):
-    center_x = width / 2.0
-    center_y = height / 2.0
-    font_size = 300
-    line_height = font_size
-    stroke_width = 3
-    scale = 100
-    font_name = "Arial"
+def create_text_image(text, text_color_hex, stroke_color_hex, fill_color_hex, width, height):
+    img = Image.new('RGBA', (width, height), fill_color_hex)
+    draw = ImageDraw.Draw(img)
+    # Шрифт размером 70% от высоты
+    font_size = int(height * 0.7)
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except:
+        font = ImageFont.load_default()
+    # Тень
+    for i in range(8):
+        draw.text((width//2 + i, height//2 + i), text, font=font, fill=(0, 0, 0, 100), anchor="mm")
+    # Обводка
+    if stroke_color_hex:
+        for dx in range(-3, 4):
+            for dy in range(-3, 4):
+                if dx != 0 or dy != 0:
+                    draw.text((width//2 + dx, height//2 + dy), text, font=font, fill=stroke_color_hex, anchor="mm")
+    # Основной текст
+    draw.text((width//2, height//2), text, font=font, fill=text_color_hex, anchor="mm")
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
 
-    ref_layer = layers[0] if layers else None
-    if ref_layer:
-        ip = ref_layer.get("ip", 0)
-        op = ref_layer.get("op", 180)
-        st = ref_layer.get("st", 0)
-    else:
-        ip, op, st = 0, 180, 0
-
-    text_layer = {
-        "ty": 5,
-        "nm": "Generated Text",
+def add_image_layer(layers, image_data_b64, width, height):
+    # Добавляем слой изображения поверх всех
+    image_layer = {
+        "ty": 2,
+        "nm": "Text Overlay",
         "ks": {
             "o": {"a": 0, "k": 100},
             "r": {"a": 0, "k": 0},
-            "p": {"a": 0, "k": [center_x, center_y, 0]},
-            "a": {"a": 0, "k": [0, 0, 0]},
-            "s": {"a": 0, "k": [scale, scale, 100]}
+            "p": {"a": 0, "k": [width/2, height/2, 0]},
+            "a": {"a": 0, "k": [width/2, height/2, 0]},
+            "s": {"a": 0, "k": [100, 100, 100]}
         },
-        "t": {
-            "d": {
-                "k": [
-                    {
-                        "s": {
-                            "f": font_name,
-                            "t": text,
-                            "j": 1,
-                            "tr": 0,
-                            "lh": line_height,
-                            "ls": 0,
-                            "s": font_size,
-                            "fc": text_rgb,
-                            "sc": stroke_rgb,
-                            "sw": stroke_width,
-                            "of": 0
-                        }
-                    }
-                ]
-            }
-        },
-        "ip": ip,
-        "op": op,
-        "st": st,
-        "bm": 0
+        "ip": 0,
+        "op": 180,
+        "st": 0,
+        "bm": 0,
+        "refId": "text_image"
     }
-    layers.append(text_layer)
+    layers.append(image_layer)
     return layers
 
-def ensure_fonts(data):
-    if "fonts" not in data:
-        data["fonts"] = {"list": []}
-    if not isinstance(data["fonts"], dict):
-        data["fonts"] = {"list": []}
-    if "list" not in data["fonts"]:
-        data["fonts"]["list"] = []
-    font_family = "Arial"
-    font_style = "Bold"
-    for f in data["fonts"]["list"]:
-        if f.get("name") == font_family and f.get("style") == font_style:
+def ensure_text_asset(data, image_data_b64, width, height):
+    if "assets" not in data:
+        data["assets"] = []
+    # Проверяем, есть ли уже ассет с id text_image
+    for asset in data["assets"]:
+        if asset.get("id") == "text_image":
+            asset["p"] = image_data_b64
             return data
-    data["fonts"]["list"].append({
-        "name": font_family,
-        "id": font_family,
-        "family": font_family,
-        "style": font_style,
-        "origin": "system"
+    # Добавляем новый ассет
+    data["assets"].append({
+        "id": "text_image",
+        "w": width,
+        "h": height,
+        "u": "",
+        "p": image_data_b64,
+        "e": 0
     })
     return data
 
@@ -204,32 +192,39 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     # Глубокая копия
     new_data = copy.deepcopy(data)
     
-    # Заменяем цвета во всём JSON
+    # Заменяем цвета
     text_rgb = hex_to_rgb(text_color_hex)
     fill_rgb = hex_to_rgb(fill_color_hex)
     stroke_rgb = hex_to_rgb(stroke_color_hex)
     new_data = find_and_replace_colors(new_data, text_rgb, fill_rgb, stroke_rgb)
     
-    # Удаляем все текстовые слои
+    # Удаляем текстовые слои
     if "layers" in new_data:
         new_data["layers"] = remove_text_layers(new_data["layers"])
     
-    # Добавляем свой текстовый слой
+    # Размеры
     width = new_data.get("w", 512)
     height = new_data.get("h", 512)
-    new_data["layers"] = add_text_layer(
-        new_data["layers"],
+    
+    # Генерируем PNG с текстом
+    img_buf = create_text_image(
         new_text,
-        text_rgb,
-        stroke_rgb,
+        text_color_hex,
+        stroke_color_hex,
+        fill_color_hex,
         width,
         height
     )
+    img_b64 = base64.b64encode(img_buf.getvalue()).decode('utf-8')
     
-    # Добавляем шрифты
-    new_data = ensure_fonts(new_data)
+    # Добавляем ассет
+    new_data = ensure_text_asset(new_data, img_b64, width, height)
     
-    # Добавляем обязательные поля для TGS
+    # Добавляем слой изображения поверх всех
+    if "layers" in new_data:
+        new_data["layers"] = add_image_layer(new_data["layers"], img_b64, width, height)
+    
+    # Добавляем обязательные поля
     new_data["tgs"] = 1
     if "props" not in new_data:
         new_data["props"] = {}
@@ -238,7 +233,7 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     try:
         with open("debug_output.json", "w", encoding="utf-8") as f:
             json.dump(new_data, f, indent=2, ensure_ascii=False)
-        logger.info("✅ debug_output.json сохранён. Цвета заменены, текст добавлен.")
+        logger.info("✅ debug_output.json сохранён. Текст добавлен как изображение.")
     except Exception as e:
         logger.warning(f"Не удалось сохранить debug: {e}")
     
@@ -691,7 +686,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ЦВЕТА МЕНЯЮТСЯ, АНИМАЦИЯ СОХРАНЯЕТСЯ, ТЕКСТ ДОБАВЛЯЕТСЯ")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ДОБАВЛЯЕТСЯ КАК ИЗОБРАЖЕНИЕ (ГАРАНТИРОВАННО ВИДЕН), АНИМАЦИЯ СОХРАНЯЕТСЯ, ЦВЕТА МЕНЯЮТСЯ")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
