@@ -115,9 +115,8 @@ def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
     else:
         return obj
 
-# ===== НОВАЯ ФУНКЦИЯ УДАЛЕНИЯ ВСЕХ ТЕКСТОВЫХ СЛОЁВ =====
 def remove_all_text_layers(layers):
-    """Удаляет ВСЕ текстовые слои (ty==5), чтобы не мешали."""
+    """Удаляет ВСЕ текстовые слои (ty==5)."""
     new_layers = []
     for layer in layers:
         if layer.get("ty") == 5:
@@ -126,7 +125,6 @@ def remove_all_text_layers(layers):
         new_layers.append(layer)
     return new_layers
 
-# ===== ДОБАВЛЕНИЕ ШРИФТОВ В КОРЕНЬ =====
 def ensure_fonts(data, font_name):
     if "fonts" not in data:
         data["fonts"] = {}
@@ -152,9 +150,8 @@ def ensure_fonts(data, font_name):
             })
     return data
 
-# ===== ДОБАВЛЕНИЕ ТЕКСТОВОГО СЛОЯ (С РАЗМЕРОМ) =====
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold"):
-    """Добавляет текстовый слой с крупным шрифтом и обводкой."""
+    """Добавляет текстовый слой с ОГРОМНЫМ шрифтом."""
     ref_layer = None
     for layer in layers:
         if "ip" in layer and "op" in layer:
@@ -167,7 +164,15 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
     else:
         ip, op, st = 0, 180, 0
 
+    # Центр композиции (обычно 512x512)
     center_x, center_y = 256, 256
+
+    # Размер шрифта — 350 (очень большой)
+    font_size = 350
+    # Высота строки тоже 350
+    line_height = 350
+    # Толщина обводки 12 для жирности
+    stroke_width = 12
 
     text_layer = {
         "ty": 5,
@@ -186,14 +191,14 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
                         "s": {
                             "f": font_name,
                             "t": new_text,
-                            "j": 1,
+                            "j": 1,          # по центру
                             "tr": 0,
-                            "lh": 120,
+                            "lh": line_height,
                             "ls": 0,
-                            "s": 120,          # РАЗМЕР ШРИФТА
+                            "s": font_size,  # ОГРОМНЫЙ РАЗМЕР
                             "fc": text_rgb,
                             "sc": stroke_rgb,
-                            "sw": 5,
+                            "sw": stroke_width,
                             "of": 0
                         }
                     }
@@ -208,7 +213,6 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
     layers.insert(0, text_layer)
     return layers
 
-# ===== ГЛАВНАЯ ФУНКЦИЯ ЗАМЕНЫ =====
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
     text_rgb = hex_to_rgb(text_color_hex)
     fill_rgb = hex_to_rgb(fill_color_hex)
@@ -223,19 +227,22 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     data = ensure_fonts(data, font_name)
     return data, True
 
-# ===== КРАСИВОЕ ПРЕВЬЮ =====
+# ===== ПРЕВЬЮ (тоже увеличим размер текста) =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
-    for i in range(5):
-        draw.text((256 + i, 256 + i), text, font=get_font(120), fill=(0, 0, 0, 100), anchor="mm")
+    # Тень побольше
+    for i in range(8):
+        draw.text((256 + i, 256 + i), text, font=get_font(200), fill=(0, 0, 0, 100), anchor="mm")
+    # Обводка потолще
     if stroke_color:
-        for dx in range(-5, 6):
-            for dy in range(-5, 6):
+        for dx in range(-8, 9):
+            for dy in range(-8, 9):
                 if dx != 0 or dy != 0:
-                    draw.text((256 + dx, 256 + dy), text, font=get_font(120), fill=stroke_color, anchor="mm")
-    draw.text((256, 256), text, font=get_font(120), fill=text_color, anchor="mm")
-    draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=3)
+                    draw.text((256 + dx, 256 + dy), text, font=get_font(200), fill=stroke_color, anchor="mm")
+    # Основной текст
+    draw.text((256, 256), text, font=get_font(200), fill=text_color, anchor="mm")
+    draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=5)
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
@@ -247,7 +254,7 @@ def get_font(size):
     except:
         return ImageFont.load_default()
 
-# ===== КЛАВИАТУРЫ =====
+# ===== КЛАВИАТУРЫ (без изменений) =====
 def main_kb(user_id):
     kb = [
         [InlineKeyboardButton(text="✨ Создать эмодзи", callback_data="create")],
@@ -301,7 +308,7 @@ def admin_kb():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main")]
     ])
 
-# ===== ОБРАБОТЧИКИ =====
+# ===== ОБРАБОТЧИКИ (без изменений) =====
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     user_id = str(message.from_user.id)
@@ -670,7 +677,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ИСПРАВЛЕН (размер + шрифты + удаление всех текстовых слоёв)")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ УВЕЛИЧЕН ДО 350px, ОБВОДКА 12px")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
