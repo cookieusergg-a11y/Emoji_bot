@@ -151,13 +151,17 @@ def ensure_fonts(data, font_name):
     return data
 
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
-    """Добавляет текстовый слой ПОВЕРХ ВСЕХ (в конец)."""
+    """Добавляет текстовый слой с размером 3000 и обводкой 3 пикселя."""
     center_x = width / 2.0
     center_y = height / 2.0
-    # Размер шрифта – 80% от меньшей стороны (чтобы точно был виден)
-    font_size = int(min(width, height) * 0.8)
+
+    # Размер шрифта = 3000 (по запросу)
+    font_size = 3000
     line_height = font_size
-    stroke_width = max(10, int(font_size * 0.06))  # жирная обводка
+    stroke_width = 3  # толщина обводки ровно 3 пикселя
+
+    # Масштаб слоя 10%, чтобы текст поместился (3000 * 0.1 = 300 пикселей)
+    scale = 10
 
     # Временные параметры из первого слоя
     ref_layer = None
@@ -180,7 +184,7 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
             "r": {"a": 0, "k": 0},
             "p": {"a": 0, "k": [center_x, center_y, 0]},
             "a": {"a": 0, "k": [0, 0, 0]},
-            "s": {"a": 0, "k": [100, 100, 100]}
+            "s": {"a": 0, "k": [scale, scale, 100]}  # масштаб 10% по X и Y
         },
         "t": {
             "d": {
@@ -189,7 +193,7 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
                         "s": {
                             "f": font_name,
                             "t": new_text,
-                            "j": 1,          # выравнивание по центру
+                            "j": 1,
                             "tr": 0,
                             "lh": line_height,
                             "ls": 0,
@@ -208,7 +212,7 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
         "st": st,
         "bm": 0
     }
-    # ⚡️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: добавляем в КОНЕЦ, чтобы быть поверх всех
+    # Добавляем в КОНЕЦ — ПОВЕРХ ВСЕХ
     layers.append(text_layer)
     return layers
 
@@ -228,19 +232,22 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     data = ensure_fonts(data, font_name)
     return data, True
 
-# ===== ПРЕВЬЮ (увеличено) =====
+# ===== ПРЕВЬЮ (увеличено, но обводка тонкая) =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
+    # Тень
     for i in range(8):
-        draw.text((256 + i, 256 + i), text, font=get_font(200), fill=(0, 0, 0, 100), anchor="mm")
+        draw.text((256 + i, 256 + i), text, font=get_font(250), fill=(0, 0, 0, 100), anchor="mm")
+    # Обводка толщиной 3 (в PNG)
     if stroke_color:
-        for dx in range(-8, 9):
-            for dy in range(-8, 9):
+        for dx in range(-3, 4):
+            for dy in range(-3, 4):
                 if dx != 0 or dy != 0:
-                    draw.text((256 + dx, 256 + dy), text, font=get_font(200), fill=stroke_color, anchor="mm")
-    draw.text((256, 256), text, font=get_font(200), fill=text_color, anchor="mm")
-    draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=5)
+                    draw.text((256 + dx, 256 + dy), text, font=get_font(250), fill=stroke_color, anchor="mm")
+    # Основной текст
+    draw.text((256, 256), text, font=get_font(250), fill=text_color, anchor="mm")
+    draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=3)
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
@@ -675,7 +682,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕПЕРЬ ТЕКСТ ДОБАВЛЯЕТСЯ ПОВЕРХ ВСЕХ СЛОЁВ (append)")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ: РАЗМЕР 3000, ОБВОДКА 3px, МАСШТАБ 10%")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
