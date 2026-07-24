@@ -7,7 +7,7 @@ import io
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 import asyncio
 import random
 import string
@@ -73,7 +73,6 @@ def increment_emoji_count(user_id):
     db["users"][uid]["emojis_created"] = db["users"][uid].get("emojis_created", 0) + 1
     save_db(db)
 
-# ===== УНИВЕРСАЛЬНЫЙ ПАРСЕР =====
 def hex_to_rgb(hex_color):
     hex_color = hex_color.lstrip('#')
     if len(hex_color) == 6:
@@ -83,46 +82,69 @@ def hex_to_rgb(hex_color):
         return [r, g, b, 1.0]
     return [1.0, 0.0, 0.0, 1.0]
 
-def process_item(item, text_rgb, fill_rgb, stroke_rgb):
-    """Рекурсивно обходит JSON и меняет ВСЕ цвета."""
-    if isinstance(item, dict):
-        # Меняем цвет в любом поле c, k, fc, sc
-        for key in ["c", "k", "fc", "sc"]:
-            if key in item and isinstance(item[key], list) and len(item[key]) >= 3:
-                if all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in item[key][:3]):
-                    # Определяем тип цвета по контексту
-                    context = str(item).lower()
-                    if "fill" in context or "fl" in context or key == "fc":
-                        item[key] = fill_rgb
-                    elif "stroke" in context or "st" in context or key == "sc":
-                        item[key] = stroke_rgb
-                    else:
-                        item[key] = text_rgb
-                    logger.info(f"Цвет в поле {key} изменён")
-        # Рекурсивно обходим все значения
-        for key, value in item.items():
-            if isinstance(value, (dict, list)):
-                item[key] = process_item(value, text_rgb, fill_rgb, stroke_rgb)
-        return item
-    elif isinstance(item, list):
-        return [process_item(sub, text_rgb, fill_rgb, stroke_rgb) for sub in item]
+# ===== УНИВЕРСАЛЬНЫЙ ПАРСЕР ЦВЕТОВ =====
+def is_color_list(val):
+    """Проверяет, является ли значение массивом из 3-4 чисел от 0 до 1."""
+    if not isinstance(val, list):
+        return False
+    if len(val) not in (3, 4):
+        return False
+    return all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in val[:3])
+
+def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
+    """Рекурсивно обходит объект и заменяет все цветовые массивы."""
+    if isinstance(obj, dict):
+        # Определяем тип цвета по ключам
+        is_fill = 'fill' in str(obj).lower() or 'fl' in str(obj).lower()
+        is_stroke = 'stroke' in str(obj).lower() or 'st' in str(obj).lower()
+        is_text = obj.get('ty') == 5
+
+        new_obj = {}
+        for key, value in obj.items():
+            # Если значение — цветовой массив, заменяем
+            if is_color_list(value):
+                if is_text:
+                    new_obj[key] = text_rgb
+                elif is_stroke:
+                    new_obj[key] = stroke_rgb
+                else:
+                    new_obj[key] = fill_rgb  # по умолчанию заливка
+                logger.info(f"Заменён цвет в поле {key} на {new_obj[key]}")
+            # Если значение — словарь с "k", содержащим цветовой массив
+            elif isinstance(value, dict) and 'k' in value and is_color_list(value['k']):
+                if is_text:
+                    value['k'] = text_rgb
+                elif is_stroke:
+                    value['k'] = stroke_rgb
+                else:
+                    value['k'] = fill_rgb
+                new_obj[key] = value
+                logger.info(f"Заменён цвет в поле {key}.k")
+            else:
+                # Рекурсивно обрабатываем вложенные структуры
+                new_obj[key] = find_and_replace_colors(value, text_rgb, fill_rgb, stroke_rgb)
+        return new_obj
+
+    elif isinstance(obj, list):
+        return [find_and_replace_colors(item, text_rgb, fill_rgb, stroke_rgb) for item in obj]
     else:
-        return item
+        return obj
 
 def remove_letter_layers(layers):
-    """Удаляет все векторные слои-буквы (один символ в nm)."""
+    """Удаляет векторные слои с именами из одного символа (буквы/цифры)."""
     new_layers = []
     for layer in layers:
         if layer.get("ty") == 4 and "nm" in layer:
             name = layer["nm"].strip()
             if len(name) == 1 and name.isalnum():
-                logger.info(f"Удалён векторный слой: {name}")
+                logger.info(f"Удалён слой-буква: {name}")
                 continue
         new_layers.append(layer)
     return new_layers
 
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial"):
     """Добавляет текстовый слой поверх всех."""
+    # Находим опорный слой для параметров времени
     ref_layer = None
     for layer in layers:
         if "ip" in layer and "op" in layer:
@@ -178,8 +200,8 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     fill_rgb = hex_to_rgb(fill_color_hex)
     stroke_rgb = hex_to_rgb(stroke_color_hex)
 
-    # Меняем все цвета
-    data = process_item(data, text_rgb, fill_rgb, stroke_rgb)
+    # Заменяем все цвета
+    data = find_and_replace_colors(data, text_rgb, fill_rgb, stroke_rgb)
 
     # Удаляем векторные буквы и добавляем текстовый слой
     if "layers" in data:
@@ -190,13 +212,11 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
 
 # ===== КРАСИВОЕ ПРЕВЬЮ =====
 def generate_preview(text, text_color, stroke_color, fill_color):
-    # Создаём изображение с градиентным фоном
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
 
     # Тень
-    shadow_offset = 5
-    for i in range(shadow_offset):
+    for i in range(5):
         draw.text((256 + i, 256 + i), text, font=get_font(80), fill=(0, 0, 0, 100), anchor="mm")
 
     # Обводка
@@ -230,7 +250,6 @@ def main_kb(user_id):
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile")],
         [InlineKeyboardButton(text="📋 Шаблоны", callback_data="list")]
     ]
-    # Админ-панель видна только админу
     if int(user_id) == ADMIN_ID:
         kb.append([InlineKeyboardButton(text="👑 Админ-панель", callback_data="admin_panel")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -485,7 +504,7 @@ async def process_payment(callback: CallbackQuery):
 
     increment_emoji_count(int(user_id))
     out = gzip.compress(json.dumps(edited, separators=(',', ':')).encode())
-    balance_display = "∞ (админ)" if int(user_id) == ADMIN_ID else str(get_balance(int(user_id)))
+    balance_display = "∞" if int(user_id) == ADMIN_ID else str(get_balance(int(user_id)))
     emoji_count = db["users"].get(user_id, {}).get("emojis_created", 0)
 
     await callback.message.answer_document(
@@ -501,7 +520,7 @@ async def show_profile(callback: CallbackQuery):
     user_id = str(callback.from_user.id)
     balance = get_balance(user_id)
     emojis = db["users"].get(user_id, {}).get("emojis_created", 0)
-    display = "∞ (админ)" if int(user_id) == ADMIN_ID else f"{balance} P"
+    display = "∞" if int(user_id) == ADMIN_ID else f"{balance} P"
     await callback.message.edit_text(
         f"👤 Профиль\n"
         f"💰 Баланс: {display}\n"
@@ -513,7 +532,7 @@ async def show_profile(callback: CallbackQuery):
     )
     await callback.answer()
 
-# ===== АДМИН-ПАНЕЛЬ (ТОЛЬКО ДЛЯ АДМИНА) =====
+# ===== АДМИН-ПАНЕЛЬ =====
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: CallbackQuery):
     if int(callback.from_user.id) != ADMIN_ID:
@@ -648,7 +667,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! НОВАЯ ВЕРСИЯ С УНИВЕРСАЛЬНЫМ ПАРСЕРОМ.")
+    logger.info("✅ БОТ ЗАПУЩЕН! УНИВЕРСАЛЬНЫЙ ПАРСЕР АКТИВЕН.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
