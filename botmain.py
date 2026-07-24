@@ -4,7 +4,6 @@ import os
 import re
 import logging
 import io
-import tempfile
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -21,6 +20,7 @@ BALANCE_PER_EMOJI = 1
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# ===== БАЗА ДАННЫХ =====
 DB_FILE = "db.json"
 def load_db():
     if os.path.exists(DB_FILE):
@@ -32,6 +32,7 @@ def save_db(db):
         json.dump(db, f, indent=2, ensure_ascii=False)
 db = load_db()
 
+# ===== ШАБЛОНЫ =====
 LOTTIES_DIR = "lotties"
 os.makedirs(LOTTIES_DIR, exist_ok=True)
 
@@ -79,6 +80,7 @@ def hex_to_rgb(hex_color):
         return [r, g, b, 1.0]
     return [1.0, 0.0, 0.0, 1.0]
 
+# ===== УНИВЕРСАЛЬНЫЙ ПАРСЕР ЦВЕТОВ =====
 def is_color_list(val):
     if not isinstance(val, list):
         return False
@@ -122,53 +124,52 @@ def remove_all_text_layers(layers):
         new_layers.append(layer)
     return new_layers
 
+# ===== НОВАЯ ФУНКЦИЯ: УДАЛЕНИЕ МАСОК И ПРИНУДИТЕЛЬНАЯ НЕПРОЗРАЧНОСТЬ =====
 def remove_masks_and_force_opacity(layers):
-    """Удаляет все маски и ставит непрозрачность 100% для всех слоёв."""
     for layer in layers:
         if "masks" in layer:
             del layer["masks"]
             logger.info(f"Удалены маски у слоя {layer.get('nm', 'без имени')}")
-        # Принудительная непрозрачность
+        # Непрозрачность
         if "ks" in layer and "o" in layer["ks"]:
             layer["ks"]["o"] = {"a": 0, "k": 100}
         if "o" in layer:
             layer["o"] = 100
     return layers
 
+# ===== ИСПРАВЛЕННАЯ ensure_fonts (добавлен origin) =====
 def ensure_fonts(data, font_name):
     if "fonts" not in data:
-        data["fonts"] = {}
-    if isinstance(data["fonts"], dict):
-        if "list" not in data["fonts"]:
-            data["fonts"]["list"] = []
-        existing = [f for f in data["fonts"]["list"] if f.get("name") == font_name]
-        if not existing:
-            data["fonts"]["list"].append({
-                "name": font_name,
-                "id": font_name,
-                "family": font_name.split("-")[0] if "-" in font_name else font_name,
-                "style": "Bold" if "Bold" in font_name else "Regular"
-            })
-    elif isinstance(data["fonts"], list):
-        existing = [f for f in data["fonts"] if f.get("name") == font_name]
-        if not existing:
-            data["fonts"].append({
-                "name": font_name,
-                "id": font_name,
-                "family": font_name.split("-")[0] if "-" in font_name else font_name,
-                "style": "Bold" if "Bold" in font_name else "Regular"
-            })
+        data["fonts"] = {"list": []}
+    if not isinstance(data["fonts"], dict):
+        data["fonts"] = {"list": []}
+    if "list" not in data["fonts"]:
+        data["fonts"]["list"] = []
+    
+    # Проверяем, есть ли уже такой шрифт
+    for f in data["fonts"]["list"]:
+        if f.get("name") == font_name:
+            return data
+    
+    # Добавляем шрифт с origin system
+    data["fonts"]["list"].append({
+        "name": font_name,
+        "id": font_name,
+        "family": font_name.split("-")[0] if "-" in font_name else font_name,
+        "style": "Bold" if "Bold" in font_name else "Regular",
+        "origin": "system"   # <-- ЭТО ВАЖНО
+    })
     return data
 
+# ===== ИСПРАВЛЕННАЯ add_text_layer (огромный текст) =====
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
-    """Добавляет текстовый слой с размером 2000 и масштабом 30% (эффект ~600px)."""
     center_x = width / 2.0
     center_y = height / 2.0
 
-    font_size = 2000
+    font_size = 500          # очень крупный
     line_height = font_size
     stroke_width = 5
-    scale = 30  # 30% от 2000 = 600 пикселей
+    scale = 200              # масштаб 200% — текст займёт всё поле
 
     ref_layer = None
     for layer in layers:
@@ -221,6 +222,7 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
     layers.append(text_layer)
     return layers
 
+# ===== ГЛАВНАЯ ФУНКЦИЯ ЗАМЕНЫ (с вызовом очистки масок) =====
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
     text_rgb = hex_to_rgb(text_color_hex)
     fill_rgb = hex_to_rgb(fill_color_hex)
@@ -231,31 +233,22 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     if "layers" in data:
         width = data.get("w", 512)
         height = data.get("h", 512)
-        # Удаляем все текстовые слои
+        # 1. Удаляем все старые текстовые слои
         data["layers"] = remove_all_text_layers(data["layers"])
-        # Удаляем маски и ставим непрозрачность 100% для всех оставшихся
+        # 2. Удаляем маски и ставим непрозрачность 100% у всех оставшихся
         data["layers"] = remove_masks_and_force_opacity(data["layers"])
-        # Добавляем наш текстовый слой ПОВЕРХ
+        # 3. Добавляем наш новый текстовый слой поверх всех
         data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name, width, height)
 
     data = ensure_fonts(data, font_name)
-
-    # Отладочный вывод: сохраняем JSON во временный файл (можно закомментировать)
-    try:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False)
-            logger.info(f"DEBUG: сохранён отредактированный JSON в {f.name}")
-    except Exception as e:
-        logger.warning(f"Не удалось сохранить debug JSON: {e}")
-
     return data, True
 
-# ===== ПРЕВЬЮ (увеличено) =====
+# ===== ПРЕВЬЮ (без изменений, но увеличено) =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
-    for i in range(10):
-        draw.text((256 + i, 256 + i), text, font=get_font(250), fill=(0, 0, 0, 120), anchor="mm")
+    for i in range(8):
+        draw.text((256 + i, 256 + i), text, font=get_font(250), fill=(0, 0, 0, 100), anchor="mm")
     if stroke_color:
         for dx in range(-5, 6):
             for dy in range(-5, 6):
@@ -274,7 +267,7 @@ def get_font(size):
     except:
         return ImageFont.load_default()
 
-# ===== КЛАВИАТУРЫ =====
+# ===== КЛАВИАТУРЫ (ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ) =====
 def main_kb(user_id):
     kb = [
         [InlineKeyboardButton(text="✨ Создать эмодзи", callback_data="create")],
@@ -328,7 +321,7 @@ def admin_kb():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main")]
     ])
 
-# ===== ОБРАБОТЧИКИ =====
+# ===== ОБРАБОТЧИКИ (БЕЗ ИЗМЕНЕНИЙ) =====
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     user_id = str(message.from_user.id)
@@ -697,7 +690,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ПРИНУДИТЕЛЬНО ДОБАВЛЯЕТСЯ С УДАЛЕНИЕМ МАСОК И 100% ОПАСИТИ")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ИСПРАВЛЕН (маски удалены, opacity=100%, шрифт с origin)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
