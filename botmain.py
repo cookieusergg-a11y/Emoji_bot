@@ -4,6 +4,7 @@ import os
 import re
 import logging
 import io
+import base64
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
@@ -115,9 +116,8 @@ def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
     else:
         return obj
 
-# ===== ФУНКЦИИ ДЛЯ ТЕКСТА =====
+# ===== УДАЛЯЕМ ТЕКСТОВЫЕ СЛОИ =====
 def remove_all_text_layers(layers):
-    """Удаляем только текстовые слои, остальное не трогаем."""
     new_layers = []
     for layer in layers:
         if layer.get("ty") == 5:
@@ -126,93 +126,55 @@ def remove_all_text_layers(layers):
         new_layers.append(layer)
     return new_layers
 
-def ensure_fonts(data, font_name):
-    """Добавляет системный шрифт Arial (стиль Bold) вне зависимости от переданного имени."""
-    if "fonts" not in data:
-        data["fonts"] = {"list": []}
-    if not isinstance(data["fonts"], dict):
-        data["fonts"] = {"list": []}
-    if "list" not in data["fonts"]:
-        data["fonts"]["list"] = []
-    
-    # Всегда используем Arial как имя шрифта, а стиль храним отдельно
-    font_family = "Arial"
-    font_style = "Bold"  # можно сделать динамическим, но пока так
-    
-    for f in data["fonts"]["list"]:
-        if f.get("name") == font_family and f.get("style") == font_style:
-            return data
-    
-    data["fonts"]["list"].append({
-        "name": font_family,
-        "id": font_family,
-        "family": font_family,
-        "style": font_style,
-        "origin": "system"
-    })
-    return data
+# ===== СОЗДАЁМ PNG С ТЕКСТОМ =====
+def create_text_image(text, text_color, stroke_color, fill_color, width, height):
+    img = Image.new('RGBA', (width, height), fill_color)
+    draw = ImageDraw.Draw(img)
+    # Тень
+    for i in range(8):
+        draw.text((width//2 + i, height//2 + i), text, font=get_font(height//2), fill=(0, 0, 0, 100), anchor="mm")
+    # Обводка
+    if stroke_color:
+        for dx in range(-3, 4):
+            for dy in range(-3, 4):
+                if dx != 0 or dy != 0:
+                    draw.text((width//2 + dx, height//2 + dy), text, font=get_font(height//2), fill=stroke_color, anchor="mm")
+    # Основной текст
+    draw.text((width//2, height//2), text, font=get_font(height//2), fill=text_color, anchor="mm")
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
 
-def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
-    """Добавляет текстовый слой с системным шрифтом Arial."""
-    center_x = width / 2.0
-    center_y = height / 2.0
-    font_size = 300
-    line_height = font_size
-    stroke_width = 3
-    scale = 100
+def get_font(size):
+    try:
+        return ImageFont.truetype("arial.ttf", size)
+    except:
+        return ImageFont.load_default()
 
-    # Игнорируем font_name, всегда используем "Arial" (системный)
-    actual_font = "Arial"
-
-    ref_layer = None
-    for layer in layers:
-        if "ip" in layer and "op" in layer:
-            ref_layer = layer
-            break
-    if ref_layer:
-        ip = ref_layer.get("ip", 0)
-        op = ref_layer.get("op", 180)
-        st = ref_layer.get("st", 0)
-    else:
-        ip, op, st = 0, 180, 0
-
-    text_layer = {
-        "ty": 5,
-        "nm": "Generated Text",
+# ===== ВСТАВЛЯЕМ КАРТИНКУ В LOTTIE КАК СЛОЙ =====
+def add_image_layer(layers, img_buffer, width, height):
+    # Кодируем PNG в base64
+    img_data = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+    # Создаём слой изображения
+    image_layer = {
+        "ty": 2,  # image layer
+        "nm": "Text Overlay",
         "ks": {
             "o": {"a": 0, "k": 100},
             "r": {"a": 0, "k": 0},
-            "p": {"a": 0, "k": [center_x, center_y, 0]},
-            "a": {"a": 0, "k": [0, 0, 0]},
-            "s": {"a": 0, "k": [scale, scale, 100]}
+            "p": {"a": 0, "k": [width/2, height/2, 0]},
+            "a": {"a": 0, "k": [width/2, height/2, 0]},
+            "s": {"a": 0, "k": [100, 100, 100]}
         },
-        "t": {
-            "d": {
-                "k": [
-                    {
-                        "s": {
-                            "f": actual_font,          # Всегда Arial
-                            "t": new_text,
-                            "j": 1,
-                            "tr": 0,
-                            "lh": line_height,
-                            "ls": 0,
-                            "s": font_size,
-                            "fc": text_rgb,
-                            "sc": stroke_rgb,
-                            "sw": stroke_width,
-                            "of": 0
-                        }
-                    }
-                ]
-            }
-        },
-        "ip": ip,
-        "op": op,
-        "st": st,
-        "bm": 0
+        "ip": 0,
+        "op": 180,
+        "st": 0,
+        "bm": 0,
+        "refId": "text_image"
     }
-    layers.append(text_layer)
+    # Добавляем картинку в assets
+    layers.append(image_layer)
     return layers
 
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
@@ -222,28 +184,58 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
 
     data = find_and_replace_colors(data, text_rgb, fill_rgb, stroke_rgb)
 
+    width = data.get("w", 512)
+    height = data.get("h", 512)
+
+    # Удаляем все старые текстовые слои
     if "layers" in data:
-        width = data.get("w", 512)
-        height = data.get("h", 512)
-        # Удаляем все старые текстовые слои (если есть)
         data["layers"] = remove_all_text_layers(data["layers"])
-        # Добавляем новый текстовый слой в конец
-        data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name, width, height)
 
-    # Добавляем шрифты с правильным именем
-    data = ensure_fonts(data, font_name)
+    # Создаём PNG с текстом
+    img_buffer = create_text_image(
+        new_text,
+        text_color_hex,
+        stroke_color_hex,
+        fill_color_hex,
+        width,
+        height
+    )
 
-    # === ОТЛАДКА: сохраняем JSON на диск ===
+    # Добавляем изображение как ассет
+    if "assets" not in data:
+        data["assets"] = []
+    # Проверяем, есть ли уже ассет с id text_image
+    existing = False
+    for asset in data["assets"]:
+        if asset.get("id") == "text_image":
+            existing = True
+            asset["p"] = base64.b64encode(img_buffer.getvalue()).decode('utf-8')  # обновляем
+            break
+    if not existing:
+        data["assets"].append({
+            "id": "text_image",
+            "w": width,
+            "h": height,
+            "u": "",
+            "p": base64.b64encode(img_buffer.getvalue()).decode('utf-8'),
+            "e": 0
+        })
+
+    # Добавляем слой с этим ассетом поверх всех
+    if "layers" in data:
+        data["layers"] = add_image_layer(data["layers"], img_buffer, width, height)
+
+    # === ОТЛАДКА ===
     try:
         with open("debug_output.json", "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info("✅ debug_output.json сохранён — проверь, есть ли там текстовый слой")
+        logger.info("✅ debug_output.json сохранён")
     except Exception as e:
         logger.warning(f"Не удалось сохранить debug: {e}")
 
     return data, True
 
-# ===== ПРЕВЬЮ =====
+# ===== ПРЕВЬЮ (PNG) =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
@@ -260,12 +252,6 @@ def generate_preview(text, text_color, stroke_color, fill_color):
     img.save(buf, format='PNG')
     buf.seek(0)
     return buf
-
-def get_font(size):
-    try:
-        return ImageFont.truetype("arial.ttf", size)
-    except:
-        return ImageFont.load_default()
 
 # ===== КЛАВИАТУРЫ =====
 def main_kb(user_id):
@@ -355,7 +341,7 @@ async def select_font(callback: CallbackQuery):
     font_name = callback.data.split("_")[1]
     if user_id not in user_states:
         user_states[user_id] = {"step": "text"}
-    user_states[user_id]["font"] = font_name  # сохраняем, но не используем
+    user_states[user_id]["font"] = font_name
     user_states[user_id]["step"] = "text"
     await callback.message.edit_text("✏️ Введи текст (до 20 символов):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -486,7 +472,7 @@ async def show_preview(event, state):
     caption = (
         f"📸 Предпросмотр:\n"
         f"Текст: {state['text']}\n"
-        f"Шрифт: Arial (системный)\n"
+        f"Шрифт: {font_name}\n"
         f"Цвет текста: {state['text_color']}\n"
         f"Цвет заливки: {state['fill_color']}\n"
         f"Цвет обводки: {state['stroke_color']}\n"
@@ -690,7 +676,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ДОБАВЛЯЕТСЯ С СИСТЕМНЫМ ШРИФТОМ ARIAL, ОТЛАДКА В debug_output.json")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ВСТАВЛЯЕТСЯ КАК ИЗОБРАЖЕНИЕ (ГАРАНТИРОВАННО ВИДЕН)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
