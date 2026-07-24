@@ -116,7 +116,6 @@ def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
         return obj
 
 def remove_all_text_layers(layers):
-    """Удаляет ВСЕ текстовые слои (ty==5)."""
     new_layers = []
     for layer in layers:
         if layer.get("ty") == 5:
@@ -151,19 +150,18 @@ def ensure_fonts(data, font_name):
     return data
 
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
-    """Добавляет текстовый слой с размером 3000 и обводкой 3 пикселя."""
+    """ГИГАНТСКИЙ текст — размер 8000, масштаб 20%."""
     center_x = width / 2.0
     center_y = height / 2.0
 
-    # Размер шрифта = 3000 (по запросу)
-    font_size = 3000
+    # Огромный размер шрифта
+    font_size = 8000
     line_height = font_size
-    stroke_width = 3  # толщина обводки ровно 3 пикселя
+    stroke_width = 4  # тонкая обводка для красоты
 
-    # Масштаб слоя 10%, чтобы текст поместился (3000 * 0.1 = 300 пикселей)
-    scale = 10
+    # Масштаб слоя 20% — эффективный размер 1600 пикселей
+    scale = 20
 
-    # Временные параметры из первого слоя
     ref_layer = None
     for layer in layers:
         if "ip" in layer and "op" in layer:
@@ -184,7 +182,7 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
             "r": {"a": 0, "k": 0},
             "p": {"a": 0, "k": [center_x, center_y, 0]},
             "a": {"a": 0, "k": [0, 0, 0]},
-            "s": {"a": 0, "k": [scale, scale, 100]}  # масштаб 10% по X и Y
+            "s": {"a": 0, "k": [scale, scale, 100]}
         },
         "t": {
             "d": {
@@ -212,7 +210,6 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
         "st": st,
         "bm": 0
     }
-    # Добавляем в КОНЕЦ — ПОВЕРХ ВСЕХ
     layers.append(text_layer)
     return layers
 
@@ -232,22 +229,21 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     data = ensure_fonts(data, font_name)
     return data, True
 
-# ===== ПРЕВЬЮ (увеличено, но обводка тонкая) =====
+# ===== ПРЕВЬЮ — тоже гигантский =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
     # Тень
-    for i in range(8):
-        draw.text((256 + i, 256 + i), text, font=get_font(250), fill=(0, 0, 0, 100), anchor="mm")
-    # Обводка толщиной 3 (в PNG)
+    for i in range(10):
+        draw.text((256 + i, 256 + i), text, font=get_font(300), fill=(0, 0, 0, 120), anchor="mm")
+    # Обводка 4 пикселя
     if stroke_color:
-        for dx in range(-3, 4):
-            for dy in range(-3, 4):
+        for dx in range(-4, 5):
+            for dy in range(-4, 5):
                 if dx != 0 or dy != 0:
-                    draw.text((256 + dx, 256 + dy), text, font=get_font(250), fill=stroke_color, anchor="mm")
-    # Основной текст
-    draw.text((256, 256), text, font=get_font(250), fill=text_color, anchor="mm")
-    draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=3)
+                    draw.text((256 + dx, 256 + dy), text, font=get_font(300), fill=stroke_color, anchor="mm")
+    draw.text((256, 256), text, font=get_font(300), fill=text_color, anchor="mm")
+    draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=4)
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
@@ -682,7 +678,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ: РАЗМЕР 3000, ОБВОДКА 3px, МАСШТАБ 10%")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ГИГАНТСКИЙ: РАЗМЕР 8000, МАСШТАБ 20%")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
