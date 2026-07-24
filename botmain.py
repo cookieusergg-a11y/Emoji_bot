@@ -10,7 +10,6 @@ from aiogram.filters import Command
 from PIL import Image, ImageDraw, ImageFont
 import asyncio
 
-# === НАСТРОЙКА ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -21,7 +20,6 @@ BALANCE_PER_EMOJI = 1
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ===== БАЗА =====
 DB_FILE = "db.json"
 def load_db():
     if os.path.exists(DB_FILE):
@@ -33,7 +31,6 @@ def save_db(db):
         json.dump(db, f, indent=2, ensure_ascii=False)
 db = load_db()
 
-# ===== ШАБЛОНЫ =====
 LOTTIES_DIR = "lotties"
 os.makedirs(LOTTIES_DIR, exist_ok=True)
 
@@ -48,7 +45,6 @@ TEMPLATES = load_templates()
 
 user_states = {}
 
-# ===== БАЛАНС =====
 def get_balance(user_id):
     user_id = int(user_id)
     if user_id in ADMINS:
@@ -68,112 +64,107 @@ def spend_balance(user_id, amount):
     save_db(db)
     return True
 
-# ===== ГЕНЕРАЦИЯ ПРЕВЬЮ =====
-def generate_preview(background_color, text, text_color, fill_color, stroke_color, stroke_width=3):
-    img = Image.new('RGBA', (512, 512), fill_color)
+def hex_to_rgb(hex_color):
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 6:
+        r = int(hex_color[0:2], 16) / 255.0
+        g = int(hex_color[2:4], 16) / 255.0
+        b = int(hex_color[4:6], 16) / 255.0
+        return [r, g, b, 1.0]
+    return [1.0, 0.0, 0.0, 1.0]
+
+def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, stroke_width=3):
+    text_rgb = hex_to_rgb(text_color_hex)
+    stroke_rgb = hex_to_rgb(stroke_color_hex)
+
+    if "layers" not in data:
+        return data, False
+
+    layers = data["layers"]
+    new_layers = []
+    found_text_layer = False
+
+    # Проходим по слоям, ищем текстовый (ty: 5)
+    for layer in layers:
+        if layer.get("ty") == 5:
+            found_text_layer = True
+            # Меняем текст
+            if "t" in layer and "d" in layer["t"] and "k" in layer["t"]["d"]:
+                if isinstance(layer["t"]["d"]["k"], dict):
+                    layer["t"]["d"]["k"]["v"] = new_text
+            # Меняем цвет текста
+            if "c" in layer and "k" in layer["c"]:
+                layer["c"]["k"] = text_rgb
+            # Меняем цвет обводки
+            if "sc" in layer and "k" in layer["sc"]:
+                layer["sc"]["k"] = stroke_rgb
+            if "sw" in layer:
+                layer["sw"] = stroke_width
+        new_layers.append(layer)
+
+    # Если текстового слоя не было — добавляем новый поверх всех
+    if not found_text_layer:
+        text_layer = {
+            "ty": 5,
+            "nm": "Generated Text",
+            "ks": {
+                "o": {"a": 0, "k": 100},
+                "r": {"a": 0, "k": 0},
+                "p": {"a": 0, "k": [256, 256, 0]},
+                "a": {"a": 0, "k": [0, 0, 0]},
+                "s": {"a": 0, "k": [100, 100, 100]}
+            },
+            "t": {
+                "d": {
+                    "k": [
+                        {
+                            "s": {
+                                "f": "Arial",
+                                "t": new_text,
+                                "j": 1,
+                                "tr": 0,
+                                "lh": 80,
+                                "ls": 0,
+                                "fc": text_rgb,
+                                "sc": stroke_rgb,
+                                "sw": stroke_width,
+                                "of": 0
+                            }
+                        }
+                    ]
+                }
+            },
+            "ip": 0,
+            "op": 180,
+            "st": 0,
+            "bm": 0
+        }
+        new_layers.insert(0, text_layer)  # вставляем в самое начало (поверх всех)
+        logger.info("Добавлен новый текстовый слой поверх всех (векторные слои сохранены)")
+        data["layers"] = new_layers
+        return data, True
+
+    data["layers"] = new_layers
+    return data, True
+
+def generate_preview(background_color, text, text_color, stroke_color, stroke_width=3):
+    img = Image.new('RGBA', (512, 512), background_color)
     draw = ImageDraw.Draw(img)
     try:
         font = ImageFont.truetype("arial.ttf", 80)
     except:
         font = ImageFont.load_default()
-    # Обводка
     if stroke_color and stroke_width > 0:
         for dx in range(-stroke_width, stroke_width+1):
             for dy in range(-stroke_width, stroke_width+1):
                 if dx != 0 or dy != 0:
                     draw.text((256+dx, 256+dy), text, font=font, fill=stroke_color, anchor="mm")
-    # Основной текст
     draw.text((256, 256), text, font=font, fill=text_color, anchor="mm")
     buf = io.BytesIO()
     img.save(buf, format='PNG')
     buf.seek(0)
     return buf
 
-# ===== ЗАМЕНА ВЕКТОРНЫХ СЛОЁВ НА ТЕКСТОВЫЙ =====
-def replace_vector_text_with_text_layer(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, stroke_width=3):
-    """
-    Удаляет все векторные слои-буквы (одиночные символы) и вставляет текстовый слой.
-    Возвращает изменённые данные и флаг, были ли замены.
-    """
-    if "layers" not in data:
-        return data, False
-
-    # Преобразуем hex в RGB для Lottie
-    def hex_to_rgb(hex_color):
-        hex_color = hex_color.lstrip('#')
-        if len(hex_color) == 6:
-            r = int(hex_color[0:2], 16) / 255.0
-            g = int(hex_color[2:4], 16) / 255.0
-            b = int(hex_color[4:6], 16) / 255.0
-            return [r, g, b, 1.0]
-        return [1.0, 0.0, 0.0, 1.0]
-
-    text_rgb = hex_to_rgb(text_color_hex)
-    stroke_rgb = hex_to_rgb(stroke_color_hex)
-
-    # Собираем все слои, которые являются векторными буквами (один символ в имени)
-    layers = data["layers"]
-    new_layers = []
-    removed_any = False
-
-    for layer in layers:
-        if layer.get("ty") == 4 and "nm" in layer:
-            name = layer["nm"].strip()
-            # Если имя состоит из одного символа и это буква или цифра
-            if len(name) == 1 and name.isalnum():
-                removed_any = True
-                continue  # пропускаем (удаляем)
-        # Оставляем остальные слои
-        new_layers.append(layer)
-
-    # Если ничего не удалили, возвращаем как есть
-    if not removed_any:
-        return data, False
-
-    # Создаём текстовый слой
-    text_layer = {
-        "ty": 5,
-        "nm": "Generated Text",
-        "ks": {
-            "o": {"a": 0, "k": 100},
-            "r": {"a": 0, "k": 0},
-            "p": {"a": 0, "k": [256, 256, 0]},
-            "a": {"a": 0, "k": [0, 0, 0]},
-            "s": {"a": 0, "k": [100, 100, 100]}
-        },
-        "t": {
-            "d": {
-                "k": [
-                    {
-                        "s": {
-                            "f": "Arial",
-                            "t": new_text,
-                            "j": 1,
-                            "tr": 0,
-                            "lh": 80,
-                            "ls": 0,
-                            "fc": text_rgb,
-                            "sc": stroke_rgb,
-                            "sw": stroke_width,
-                            "of": 0  # обводка поверх текста
-                        }
-                    }
-                ]
-            }
-        },
-        "ip": 0,
-        "op": 180,
-        "st": 0,
-        "bm": 0
-    }
-
-    # Добавляем текстовый слой в начало или конец (лучше в начало, чтобы он был поверх)
-    new_layers.insert(0, text_layer)
-    data["layers"] = new_layers
-
-    return data, True
-
-# ===== КЛАВИАТУРЫ =====
 def main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Шаблоны", callback_data="list")],
@@ -216,8 +207,6 @@ def admin_kb():
         [InlineKeyboardButton(text="📥 Добавить шаблон", callback_data="admin_add_lottie")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main")]
     ])
-
-# ===== ОБРАБОТЧИКИ =====
 
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
@@ -279,12 +268,11 @@ async def handle_text(message: Message):
         await message.answer("🎨 Выбери цвет ТЕКСТА:", reply_markup=color_kb("text"))
     
     elif state["step"].startswith("custom_"):
-        # Обработка кастомного цвета
         hex_color = message.text.strip()
         if not re.match(r'^#[0-9A-Fa-f]{6}$', hex_color):
             await message.answer("❌ Неверный формат. Введи HEX как #RRGGBB")
             return
-        part = state["step"].split("_")[1]  # text, fill, stroke
+        part = state["step"].split("_")[1]
         if part == "text":
             state["text_color"] = hex_color
             state["step"] = "fill_color"
@@ -295,7 +283,6 @@ async def handle_text(message: Message):
             await message.answer("🎨 Выбери цвет ОБВОДКИ:", reply_markup=color_kb("stroke"))
         elif part == "stroke":
             state["stroke_color"] = hex_color
-            # Переходим к превью
             await show_preview(message, state)
 
 @dp.callback_query(F.data.startswith("col_"))
@@ -305,7 +292,7 @@ async def handle_color(callback: CallbackQuery):
         await callback.answer("❌ Ошибка")
         return
     parts = callback.data.split("_")
-    step = parts[1]  # text, fill, stroke
+    step = parts[1]
     color_hex = parts[2]
     state = user_states[user_id]
     
@@ -328,7 +315,7 @@ async def custom_color(callback: CallbackQuery):
     if user_id not in user_states:
         await callback.answer("❌ Ошибка")
         return
-    step = callback.data.split("_")[1]  # text, fill, stroke
+    step = callback.data.split("_")[1]
     state = user_states[user_id]
     state["step"] = f"custom_{step}"
     await callback.message.edit_text(f"🎨 Введи HEX-код для {'ТЕКСТА' if step=='text' else 'ЗАЛИВКИ' if step=='fill' else 'ОБВОДКИ'} (например, #FF5733):")
@@ -336,13 +323,11 @@ async def custom_color(callback: CallbackQuery):
 
 async def show_preview(event, state):
     user_id = str(event.from_user.id)
-    # Загружаем шаблон
     file_path = os.path.join(LOTTIES_DIR, TEMPLATES[state["template"]])
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     
-    # Заменяем векторные буквы на текстовый слой
-    edited, replaced = replace_vector_text_with_text_layer(
+    edited, replaced = replace_text_and_colors(
         data,
         state["text"],
         state["text_color"],
@@ -351,27 +336,31 @@ async def show_preview(event, state):
         stroke_width=3
     )
     
-    # Сохраняем отредактированные данные в состоянии
     state["edited_data"] = edited
     state["step"] = "preview"
     
-    # Генерируем превью (PNG) с использованием PIL
     preview_img = generate_preview(
         state["fill_color"],
         state["text"],
         state["text_color"],
-        state["fill_color"],
         state["stroke_color"]
     )
     
+    caption = (
+        f"📸 Предпросмотр:\n"
+        f"Текст: {state['text']}\n"
+        f"Цвет текста: {state['text_color']}\n"
+        f"Цвет заливки: {state['fill_color']}\n"
+        f"Цвет обводки: {state['stroke_color']}\n"
+    )
+    if replaced:
+        caption += "✅ Текст добавлен/обновлён"
+    else:
+        caption += "⚠️ Не найден текстовый слой, но текст будет наложен поверх"
+    
     await event.message.answer_photo(
         types.BufferedInputFile(preview_img.getvalue(), filename="preview.png"),
-        caption=f"📸 Предпросмотр:\n"
-                f"Текст: {state['text']}\n"
-                f"Цвет текста: {state['text_color']}\n"
-                f"Цвет заливки: {state['fill_color']}\n"
-                f"Цвет обводки: {state['stroke_color']}\n"
-                f"{'✅ Векторные буквы заменены на текст' if replaced else '⚠️ Векторные буквы не найдены, но текст наложен поверх'}",
+        caption=caption,
         reply_markup=preview_kb(state["template"] + "_" + user_id)
     )
 
@@ -388,14 +377,12 @@ async def process_payment(callback: CallbackQuery):
         await callback.answer()
         return
     
-    # Получаем отредактированные данные
     edited = state.get("edited_data")
     if not edited:
-        # fallback
         file_path = os.path.join(LOTTIES_DIR, TEMPLATES[state["template"]])
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        edited, _ = replace_vector_text_with_text_layer(
+        edited, _ = replace_text_and_colors(
             data,
             state["text"],
             state["text_color"],
@@ -403,9 +390,7 @@ async def process_payment(callback: CallbackQuery):
             state["stroke_color"]
         )
     
-    # Сжимаем в TGS
     out = gzip.compress(json.dumps(edited, separators=(',', ':')).encode())
-    
     balance_display = "∞" if int(user_id) in ADMINS else str(get_balance(int(user_id)))
     
     await callback.message.answer_document(
@@ -416,7 +401,6 @@ async def process_payment(callback: CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.answer()
 
-# ===== БАЛАНС И ПОПОЛНЕНИЕ =====
 @dp.callback_query(F.data == "balance")
 async def show_balance(callback: CallbackQuery):
     user_id = int(callback.from_user.id)
@@ -430,7 +414,6 @@ async def topup(callback: CallbackQuery):
     await callback.message.edit_text("⭐ Пополнение через звёзды временно отключено.\nИспользуй /add_balance", reply_markup=main_kb())
     await callback.answer()
 
-# ===== АДМИН-ПАНЕЛЬ =====
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: CallbackQuery):
     if callback.from_user.id not in ADMINS:
@@ -479,7 +462,6 @@ async def admin_add_lottie(callback: CallbackQuery):
     await callback.message.edit_text("📥 Отправь мне JSON-файл с шаблоном.")
     await callback.answer()
 
-# ===== АДМИН-КОМАНДЫ =====
 @dp.message(Command("add_balance"))
 async def add_balance(message: Message):
     if message.from_user.id not in ADMINS:
@@ -565,7 +547,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ЗАМЕНЯЕТ ВЕКТОРНЫЕ БУКВЫ НА ТЕКСТ.")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ НАКЛАДЫВАЕТСЯ ПОВЕРХ, ДЕКОРАЦИИ СОХРАНЯЮТСЯ.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
