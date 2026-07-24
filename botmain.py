@@ -87,30 +87,32 @@ def is_color_list(val):
     return all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in val[:3])
 
 def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
-    # Эта функция больше не нужна, но оставим на всякий случай
-    pass
-
-def ensure_fonts(data):
-    if "fonts" not in data:
-        data["fonts"] = {"list": []}
-    if not isinstance(data["fonts"], dict):
-        data["fonts"] = {"list": []}
-    if "list" not in data["fonts"]:
-        data["fonts"]["list"] = []
-    # Добавляем системный Arial, если его нет
-    font_family = "Arial"
-    font_style = "Bold"
-    for f in data["fonts"]["list"]:
-        if f.get("name") == font_family and f.get("style") == font_style:
-            return data
-    data["fonts"]["list"].append({
-        "name": font_family,
-        "id": font_family,
-        "family": font_family,
-        "style": font_style,
-        "origin": "system"
-    })
-    return data
+    """Рекурсивно заменяет цвета в объекте."""
+    if isinstance(obj, dict):
+        is_fill = 'fill' in str(obj).lower() or 'fl' in str(obj).lower()
+        is_stroke = 'stroke' in str(obj).lower() or 'st' in str(obj).lower()
+        new_obj = {}
+        for key, value in obj.items():
+            if is_color_list(value):
+                if is_stroke:
+                    new_obj[key] = stroke_rgb
+                else:
+                    new_obj[key] = fill_rgb
+                logger.info(f"Заменён цвет в поле {key}")
+            elif isinstance(value, dict) and 'k' in value and is_color_list(value['k']):
+                if is_stroke:
+                    value['k'] = stroke_rgb
+                else:
+                    value['k'] = fill_rgb
+                new_obj[key] = value
+                logger.info(f"Заменён цвет в поле {key}.k")
+            else:
+                new_obj[key] = find_and_replace_colors(value, text_rgb, fill_rgb, stroke_rgb)
+        return new_obj
+    elif isinstance(obj, list):
+        return [find_and_replace_colors(item, text_rgb, fill_rgb, stroke_rgb) for item in obj]
+    else:
+        return obj
 
 def remove_text_layers(layers):
     new_layers = []
@@ -130,7 +132,6 @@ def add_text_layer(layers, text, text_rgb, stroke_rgb, width, height):
     scale = 100
     font_name = "Arial"
 
-    # Время жизни берём из первого слоя, если есть
     ref_layer = layers[0] if layers else None
     if ref_layer:
         ip = ref_layer.get("ip", 0)
@@ -175,12 +176,39 @@ def add_text_layer(layers, text, text_rgb, stroke_rgb, width, height):
         "st": st,
         "bm": 0
     }
-    layers.append(text_layer)  # поверх всех
+    layers.append(text_layer)
     return layers
 
+def ensure_fonts(data):
+    if "fonts" not in data:
+        data["fonts"] = {"list": []}
+    if not isinstance(data["fonts"], dict):
+        data["fonts"] = {"list": []}
+    if "list" not in data["fonts"]:
+        data["fonts"]["list"] = []
+    font_family = "Arial"
+    font_style = "Bold"
+    for f in data["fonts"]["list"]:
+        if f.get("name") == font_family and f.get("style") == font_style:
+            return data
+    data["fonts"]["list"].append({
+        "name": font_family,
+        "id": font_family,
+        "family": font_family,
+        "style": font_style,
+        "origin": "system"
+    })
+    return data
+
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
-    # Делаем глубокую копию, чтобы не испортить оригинал
+    # Глубокая копия
     new_data = copy.deepcopy(data)
+    
+    # Заменяем цвета во всём JSON
+    text_rgb = hex_to_rgb(text_color_hex)
+    fill_rgb = hex_to_rgb(fill_color_hex)
+    stroke_rgb = hex_to_rgb(stroke_color_hex)
+    new_data = find_and_replace_colors(new_data, text_rgb, fill_rgb, stroke_rgb)
     
     # Удаляем все текстовые слои
     if "layers" in new_data:
@@ -189,8 +217,6 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     # Добавляем свой текстовый слой
     width = new_data.get("w", 512)
     height = new_data.get("h", 512)
-    text_rgb = hex_to_rgb(text_color_hex)
-    stroke_rgb = hex_to_rgb(stroke_color_hex)
     new_data["layers"] = add_text_layer(
         new_data["layers"],
         new_text,
@@ -208,11 +234,11 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     if "props" not in new_data:
         new_data["props"] = {}
     
-    # === ОТЛАДКА ===
+    # Отладка
     try:
         with open("debug_output.json", "w", encoding="utf-8") as f:
             json.dump(new_data, f, indent=2, ensure_ascii=False)
-        logger.info("✅ debug_output.json сохранён. Анимация должна быть сохранена.")
+        logger.info("✅ debug_output.json сохранён. Цвета заменены, текст добавлен.")
     except Exception as e:
         logger.warning(f"Не удалось сохранить debug: {e}")
     
@@ -665,7 +691,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! АНИМАЦИЯ СОХРАНЯЕТСЯ, ТЕКСТ ДОБАВЛЯЕТСЯ ПОВЕРХ")
+    logger.info("✅ БОТ ЗАПУЩЕН! ЦВЕТА МЕНЯЮТСЯ, АНИМАЦИЯ СОХРАНЯЕТСЯ, ТЕКСТ ДОБАВЛЯЕТСЯ")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
