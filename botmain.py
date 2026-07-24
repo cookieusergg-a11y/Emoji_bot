@@ -150,8 +150,17 @@ def ensure_fonts(data, font_name):
             })
     return data
 
-def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold"):
-    """Добавляет текстовый слой с ОГРОМНЫМ шрифтом."""
+def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
+    """Добавляет текстовый слой с размером 70% от меньшей стороны."""
+    # Вычисляем центр
+    center_x = width / 2.0
+    center_y = height / 2.0
+    # Размер шрифта = 70% от меньшей стороны
+    font_size = int(min(width, height) * 0.7)
+    line_height = font_size
+    stroke_width = max(8, int(font_size * 0.05))  # толщина обводки пропорционально
+
+    # Берём время из первого попавшегося слоя
     ref_layer = None
     for layer in layers:
         if "ip" in layer and "op" in layer:
@@ -163,16 +172,6 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
         st = ref_layer.get("st", 0)
     else:
         ip, op, st = 0, 180, 0
-
-    # Центр композиции (обычно 512x512)
-    center_x, center_y = 256, 256
-
-    # Размер шрифта — 350 (очень большой)
-    font_size = 350
-    # Высота строки тоже 350
-    line_height = 350
-    # Толщина обводки 12 для жирности
-    stroke_width = 12
 
     text_layer = {
         "ty": 5,
@@ -191,11 +190,11 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
                         "s": {
                             "f": font_name,
                             "t": new_text,
-                            "j": 1,          # по центру
+                            "j": 1,          # выравнивание по центру
                             "tr": 0,
                             "lh": line_height,
                             "ls": 0,
-                            "s": font_size,  # ОГРОМНЫЙ РАЗМЕР
+                            "s": font_size,
                             "fc": text_rgb,
                             "sc": stroke_rgb,
                             "sw": stroke_width,
@@ -210,6 +209,7 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name="Arial-Bold
         "st": st,
         "bm": 0
     }
+    # Вставляем в начало (поверх всех)
     layers.insert(0, text_layer)
     return layers
 
@@ -218,23 +218,30 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     fill_rgb = hex_to_rgb(fill_color_hex)
     stroke_rgb = hex_to_rgb(stroke_color_hex)
 
+    # Заменяем цвета во всех слоях
     data = find_and_replace_colors(data, text_rgb, fill_rgb, stroke_rgb)
 
     if "layers" in data:
+        # Получаем размеры композиции (по умолчанию 512x512)
+        width = data.get("w", 512)
+        height = data.get("h", 512)
+        # Удаляем все старые текстовые слои
         data["layers"] = remove_all_text_layers(data["layers"])
-        data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name)
+        # Добавляем новый текстовый слой с адаптивным размером
+        data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name, width, height)
 
+    # Добавляем шрифты в корень
     data = ensure_fonts(data, font_name)
     return data, True
 
-# ===== ПРЕВЬЮ (тоже увеличим размер текста) =====
+# ===== ПРЕВЬЮ (увеличено) =====
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
-    # Тень побольше
+    # Тень
     for i in range(8):
         draw.text((256 + i, 256 + i), text, font=get_font(200), fill=(0, 0, 0, 100), anchor="mm")
-    # Обводка потолще
+    # Обводка
     if stroke_color:
         for dx in range(-8, 9):
             for dy in range(-8, 9):
@@ -677,7 +684,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ УВЕЛИЧЕН ДО 350px, ОБВОДКА 12px")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ АДАПТИРОВАН ПОД РАЗМЕР КОМПОЗИЦИИ (70% от меньшей стороны)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
