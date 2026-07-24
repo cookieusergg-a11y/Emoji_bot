@@ -151,16 +151,15 @@ def ensure_fonts(data, font_name):
     return data
 
 def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
-    """Добавляет текстовый слой с размером 70% от меньшей стороны."""
-    # Вычисляем центр
+    """Добавляет текстовый слой ПОВЕРХ ВСЕХ (в конец)."""
     center_x = width / 2.0
     center_y = height / 2.0
-    # Размер шрифта = 70% от меньшей стороны
-    font_size = int(min(width, height) * 0.7)
+    # Размер шрифта – 80% от меньшей стороны (чтобы точно был виден)
+    font_size = int(min(width, height) * 0.8)
     line_height = font_size
-    stroke_width = max(8, int(font_size * 0.05))  # толщина обводки пропорционально
+    stroke_width = max(10, int(font_size * 0.06))  # жирная обводка
 
-    # Берём время из первого попавшегося слоя
+    # Временные параметры из первого слоя
     ref_layer = None
     for layer in layers:
         if "ip" in layer and "op" in layer:
@@ -209,8 +208,8 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
         "st": st,
         "bm": 0
     }
-    # Вставляем в начало (поверх всех)
-    layers.insert(0, text_layer)
+    # ⚡️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: добавляем в КОНЕЦ, чтобы быть поверх всех
+    layers.append(text_layer)
     return layers
 
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
@@ -218,19 +217,14 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
     fill_rgb = hex_to_rgb(fill_color_hex)
     stroke_rgb = hex_to_rgb(stroke_color_hex)
 
-    # Заменяем цвета во всех слоях
     data = find_and_replace_colors(data, text_rgb, fill_rgb, stroke_rgb)
 
     if "layers" in data:
-        # Получаем размеры композиции (по умолчанию 512x512)
         width = data.get("w", 512)
         height = data.get("h", 512)
-        # Удаляем все старые текстовые слои
         data["layers"] = remove_all_text_layers(data["layers"])
-        # Добавляем новый текстовый слой с адаптивным размером
         data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name, width, height)
 
-    # Добавляем шрифты в корень
     data = ensure_fonts(data, font_name)
     return data, True
 
@@ -238,16 +232,13 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
 def generate_preview(text, text_color, stroke_color, fill_color):
     img = Image.new('RGBA', (512, 512), fill_color)
     draw = ImageDraw.Draw(img)
-    # Тень
     for i in range(8):
         draw.text((256 + i, 256 + i), text, font=get_font(200), fill=(0, 0, 0, 100), anchor="mm")
-    # Обводка
     if stroke_color:
         for dx in range(-8, 9):
             for dy in range(-8, 9):
                 if dx != 0 or dy != 0:
                     draw.text((256 + dx, 256 + dy), text, font=get_font(200), fill=stroke_color, anchor="mm")
-    # Основной текст
     draw.text((256, 256), text, font=get_font(200), fill=text_color, anchor="mm")
     draw.rectangle([10, 10, 502, 502], outline=stroke_color, width=5)
     buf = io.BytesIO()
@@ -684,7 +675,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ АДАПТИРОВАН ПОД РАЗМЕР КОМПОЗИЦИИ (70% от меньшей стороны)")
+    logger.info("✅ БОТ ЗАПУЩЕН! ТЕПЕРЬ ТЕКСТ ДОБАВЛЯЕТСЯ ПОВЕРХ ВСЕХ СЛОЁВ (append)")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
