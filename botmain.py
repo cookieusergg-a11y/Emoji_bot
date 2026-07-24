@@ -20,7 +20,6 @@ BALANCE_PER_EMOJI = 1
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# ===== БАЗА ДАННЫХ =====
 DB_FILE = "db.json"
 def load_db():
     if os.path.exists(DB_FILE):
@@ -32,7 +31,6 @@ def save_db(db):
         json.dump(db, f, indent=2, ensure_ascii=False)
 db = load_db()
 
-# ===== ШАБЛОНЫ =====
 LOTTIES_DIR = "lotties"
 os.makedirs(LOTTIES_DIR, exist_ok=True)
 
@@ -80,102 +78,45 @@ def hex_to_rgb(hex_color):
         return [r, g, b, 1.0]
     return [1.0, 0.0, 0.0, 1.0]
 
-# ===== УНИВЕРСАЛЬНЫЙ ПАРСЕР ЦВЕТОВ =====
-def is_color_list(val):
-    if not isinstance(val, list):
-        return False
-    if len(val) not in (3, 4):
-        return False
-    return all(isinstance(x, (int, float)) and 0 <= x <= 1 for x in val[:3])
-
-def find_and_replace_colors(obj, text_rgb, fill_rgb, stroke_rgb):
-    if isinstance(obj, dict):
-        is_fill = 'fill' in str(obj).lower() or 'fl' in str(obj).lower()
-        is_stroke = 'stroke' in str(obj).lower() or 'st' in str(obj).lower()
-        new_obj = {}
-        for key, value in obj.items():
-            if is_color_list(value):
-                if is_stroke:
-                    new_obj[key] = stroke_rgb
-                else:
-                    new_obj[key] = fill_rgb
-                logger.info(f"Заменён цвет в поле {key}")
-            elif isinstance(value, dict) and 'k' in value and is_color_list(value['k']):
-                if is_stroke:
-                    value['k'] = stroke_rgb
-                else:
-                    value['k'] = fill_rgb
-                new_obj[key] = value
-                logger.info(f"Заменён цвет в поле {key}.k")
-            else:
-                new_obj[key] = find_and_replace_colors(value, text_rgb, fill_rgb, stroke_rgb)
-        return new_obj
-    elif isinstance(obj, list):
-        return [find_and_replace_colors(item, text_rgb, fill_rgb, stroke_rgb) for item in obj]
-    else:
-        return obj
-
-# ===== ФУНКЦИИ ДЛЯ ТЕКСТА =====
-def remove_all_text_layers(layers):
-    """Удаляем все старые текстовые слои (ty=5)."""
-    new_layers = []
-    for layer in layers:
-        if layer.get("ty") == 5:
-            logger.info(f"Удалён текстовый слой: {layer.get('nm', 'без имени')}")
-            continue
-        new_layers.append(layer)
-    return new_layers
-
-def ensure_fonts(data, font_name):
-    """Добавляет системный шрифт Arial с origin system."""
-    if "fonts" not in data:
-        data["fonts"] = {"list": []}
-    if not isinstance(data["fonts"], dict):
-        data["fonts"] = {"list": []}
-    if "list" not in data["fonts"]:
-        data["fonts"]["list"] = []
+# ===== НОВАЯ ЛОГИКА: СОЗДАЁМ LOTTIE С НУЛЯ =====
+def build_new_lottie_from_template(template_data, text, text_color, fill_color, stroke_color):
+    """Создаёт новый Lottie, копируя слои из шаблона, но добавляя свой текст поверх."""
+    # Базовые параметры
+    width = template_data.get("w", 512)
+    height = template_data.get("h", 512)
+    fr = template_data.get("fr", 30)
+    ip = template_data.get("ip", 0)
+    op = template_data.get("op", 180)
     
-    font_family = "Arial"
-    font_style = "Bold"
+    # Берём все слои, кроме текстовых (ty=5)
+    layers = []
+    for layer in template_data.get("layers", []):
+        if layer.get("ty") != 5:
+            layers.append(layer)
     
-    for f in data["fonts"]["list"]:
-        if f.get("name") == font_family and f.get("style") == font_style:
-            return data
+    # Добавляем свой текстовый слой
+    text_rgb = hex_to_rgb(text_color)
+    stroke_rgb = hex_to_rgb(stroke_color)
     
-    data["fonts"]["list"].append({
-        "name": font_family,
-        "id": font_family,
-        "family": font_family,
-        "style": font_style,
-        "origin": "system"
-    })
-    return data
-
-def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, height):
-    """Добавляет текстовый слой с системным шрифтом Arial поверх всех."""
     center_x = width / 2.0
     center_y = height / 2.0
     font_size = 300
     line_height = font_size
     stroke_width = 3
     scale = 100
-
-    # Всегда используем Arial
-    actual_font = "Arial"
-
-    # Определяем время жизни слоя из первого попавшегося
-    ref_layer = None
-    for layer in layers:
-        if "ip" in layer and "op" in layer:
-            ref_layer = layer
-            break
+    
+    # Используем системный шрифт
+    font_name = "Arial"
+    
+    # Определяем время жизни из первого слоя
+    ref_layer = layers[0] if layers else None
     if ref_layer:
-        ip = ref_layer.get("ip", 0)
-        op = ref_layer.get("op", 180)
-        st = ref_layer.get("st", 0)
+        ip_layer = ref_layer.get("ip", 0)
+        op_layer = ref_layer.get("op", 180)
+        st_layer = ref_layer.get("st", 0)
     else:
-        ip, op, st = 0, 180, 0
-
+        ip_layer, op_layer, st_layer = 0, 180, 0
+    
     text_layer = {
         "ty": 5,
         "nm": "Generated Text",
@@ -191,8 +132,8 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
                 "k": [
                     {
                         "s": {
-                            "f": actual_font,
-                            "t": new_text,
+                            "f": font_name,
+                            "t": text,
                             "j": 1,
                             "tr": 0,
                             "lh": line_height,
@@ -207,48 +148,58 @@ def add_text_layer(layers, new_text, text_rgb, stroke_rgb, font_name, width, hei
                 ]
             }
         },
-        "ip": ip,
-        "op": op,
-        "st": st,
+        "ip": ip_layer,
+        "op": op_layer,
+        "st": st_layer,
         "bm": 0
     }
-    # Добавляем в конец (поверх всех)
-    layers.append(text_layer)
-    return layers
+    layers.append(text_layer)  # добавляем в конец (поверх всех)
+    
+    # Собираем новый Lottie
+    new_lottie = {
+        "v": "5.5.2",
+        "w": width,
+        "h": height,
+        "ip": ip,
+        "op": op,
+        "fr": fr,
+        "layers": layers,
+        "fonts": {
+            "list": [
+                {
+                    "name": font_name,
+                    "id": font_name,
+                    "family": font_name,
+                    "style": "Bold",
+                    "origin": "system"
+                }
+            ]
+        },
+        "tgs": 1,
+        "props": {}
+    }
+    return new_lottie
 
 def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, font_name="Arial-Bold"):
-    text_rgb = hex_to_rgb(text_color_hex)
-    fill_rgb = hex_to_rgb(fill_color_hex)
-    stroke_rgb = hex_to_rgb(stroke_color_hex)
-
-    data = find_and_replace_colors(data, text_rgb, fill_rgb, stroke_rgb)
-
-    if "layers" in data:
-        width = data.get("w", 512)
-        height = data.get("h", 512)
-        # Удаляем все старые текстовые слои
-        data["layers"] = remove_all_text_layers(data["layers"])
-        # Добавляем новый текстовый слой
-        data["layers"] = add_text_layer(data["layers"], new_text, text_rgb, stroke_rgb, font_name, width, height)
-
-    # Добавляем секцию fonts
-    data = ensure_fonts(data, font_name)
-
-    # ===== КРИТИЧЕСКОЕ ДОБАВЛЕНИЕ ДЛЯ TGS =====
-    data["tgs"] = 1
-    data["props"] = {}
-    if "v" not in data:
-        data["v"] = "5.5.2"
-
+    """Заменяет текст, создавая новый Lottie с нуля."""
+    # Просто игнорируем старый data, строим новый
+    new_lottie = build_new_lottie_from_template(
+        data,
+        new_text,
+        text_color_hex,
+        fill_color_hex,
+        stroke_color_hex
+    )
+    
     # === ОТЛАДКА ===
     try:
         with open("debug_output.json", "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        logger.info("✅ debug_output.json сохранён. Проверьте наличие поля 'tgs': 1")
+            json.dump(new_lottie, f, indent=2, ensure_ascii=False)
+        logger.info("✅ debug_output.json сохранён. Проверьте структуру.")
     except Exception as e:
         logger.warning(f"Не удалось сохранить debug: {e}")
-
-    return data, True
+    
+    return new_lottie, True
 
 # ===== ПРЕВЬЮ =====
 def generate_preview(text, text_color, stroke_color, fill_color):
@@ -362,7 +313,7 @@ async def select_font(callback: CallbackQuery):
     font_name = callback.data.split("_")[1]
     if user_id not in user_states:
         user_states[user_id] = {"step": "text"}
-    user_states[user_id]["font"] = font_name  # сохраняем, но не используем
+    user_states[user_id]["font"] = font_name
     user_states[user_id]["step"] = "text"
     await callback.message.edit_text("✏️ Введи текст (до 20 символов):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -697,7 +648,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ДОБАВЛЕНО ОБЯЗАТЕЛЬНОЕ ПОЛЕ 'tgs': 1")
+    logger.info("✅ БОТ ЗАПУЩЕН! LOTTIE СОЗДАЁТСЯ С НУЛЯ С ТЕКСТОМ")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
