@@ -73,62 +73,85 @@ def hex_to_rgb(hex_color):
         return [r, g, b, 1.0]
     return [1.0, 0.0, 0.0, 1.0]
 
-def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, stroke_width=3):
+def process_layers(layers, new_text, text_rgb, fill_rgb, stroke_rgb, stroke_width=3):
     """
-    Заменяет текст в текстовых слоях (ty=5) или добавляет новый текстовый слой поверх,
-    копируя параметры времени из первого слоя.
+    Обходит все слои:
+    - ty=5: заменяет текст и цвета
+    - ty=4 с именем-буквой: скрывает (opacity=0)
+    - меняет fill и stroke цвета во всех слоях
+    Возвращает (новые слои, флаг найдена ли буква или текстовый слой)
     """
-    text_rgb = hex_to_rgb(text_color_hex)
-    stroke_rgb = hex_to_rgb(stroke_color_hex)
-
-    if "layers" not in data:
-        return data, False
-
-    layers = data["layers"]
     new_layers = []
     found_text_layer = False
+    found_letter_layer = False
+    first_layer_ref = None
 
-    # Находим первый слой для копирования ip/op/st
-    ref_layer = None
     for layer in layers:
         if "ip" in layer and "op" in layer:
-            ref_layer = layer
+            first_layer_ref = layer
             break
 
-    if not ref_layer:
-        logger.warning("Не найден ни один слой с ip/op, использую значения по умолчанию")
-        ip_default = 0
-        op_default = 180
-        st_default = 0
+    if not first_layer_ref:
+        ip_def, op_def, st_def = 0, 180, 0
     else:
-        ip_default = ref_layer.get("ip", 0)
-        op_default = ref_layer.get("op", 180)
-        st_default = ref_layer.get("st", 0)
-        logger.info(f"Использую ip={ip_default}, op={op_default}, st={st_default} из слоя {ref_layer.get('nm', 'unknown')}")
+        ip_def = first_layer_ref.get("ip", 0)
+        op_def = first_layer_ref.get("op", 180)
+        st_def = first_layer_ref.get("st", 0)
 
     for layer in layers:
+        # === ТЕКСТОВЫЙ СЛОЙ (ty=5) ===
         if layer.get("ty") == 5:
             found_text_layer = True
             # Меняем текст
             if "t" in layer and "d" in layer["t"] and "k" in layer["t"]["d"]:
                 if isinstance(layer["t"]["d"]["k"], dict):
                     layer["t"]["d"]["k"]["v"] = new_text
-                # Если это список, берём первый элемент
                 elif isinstance(layer["t"]["d"]["k"], list) and len(layer["t"]["d"]["k"]) > 0:
                     if isinstance(layer["t"]["d"]["k"][0], dict) and "s" in layer["t"]["d"]["k"][0]:
                         layer["t"]["d"]["k"][0]["s"]["t"] = new_text
             # Меняем цвет текста
             if "c" in layer and "k" in layer["c"]:
                 layer["c"]["k"] = text_rgb
-            # Меняем цвет обводки
+            # Меняем цвет обводки текста
             if "sc" in layer and "k" in layer["sc"]:
                 layer["sc"]["k"] = stroke_rgb
             if "sw" in layer:
                 layer["sw"] = stroke_width
+            new_layers.append(layer)
+            continue
+
+        # === ВЕКТОРНЫЕ СЛОИ-БУКВЫ (ty=4, nm из одной буквы/цифры) ===
+        if layer.get("ty") == 4 and "nm" in layer:
+            name = layer["nm"].strip()
+            if len(name) == 1 and name.isalnum():
+                found_letter_layer = True
+                # Скрываем слой
+                if "ks" not in layer:
+                    layer["ks"] = {}
+                if "o" not in layer["ks"]:
+                    layer["ks"]["o"] = {"a": 0, "k": 0}
+                else:
+                    layer["ks"]["o"]["k"] = 0
+                new_layers.append(layer)
+                continue
+
+        # === ОСТАЛЬНЫЕ СЛОИ (меняем fill и stroke) ===
+        if "shapes" in layer:
+            for shape in layer["shapes"]:
+                if "it" in shape:
+                    for item in shape["it"]:
+                        if item.get("ty") == "fl" and "c" in item and "k" in item["c"]:
+                            item["c"]["k"] = fill_rgb
+                        if item.get("ty") == "st" and "c" in item and "k" in item["c"]:
+                            item["c"]["k"] = stroke_rgb
         new_layers.append(layer)
 
-    # Если текстового слоя не было — добавляем новый поверх всех
-    if not found_text_layer:
+    # Если есть текстовый слой — изменения уже внесены
+    if found_text_layer:
+        return new_layers, True
+
+    # Если есть буквенные слои, но нет текстового — добавляем новый текстовый слой
+    if found_letter_layer:
         text_layer = {
             "ty": 5,
             "nm": "Generated Text",
@@ -146,7 +169,7 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
                             "s": {
                                 "f": "Arial",
                                 "t": new_text,
-                                "j": 1,  # центр
+                                "j": 1,
                                 "tr": 0,
                                 "lh": 80,
                                 "ls": 0,
@@ -159,18 +182,36 @@ def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stro
                     ]
                 }
             },
-            "ip": ip_default,
-            "op": op_default,
-            "st": st_default,
+            "ip": ip_def,
+            "op": op_def,
+            "st": st_def,
             "bm": 0
         }
-        new_layers.insert(0, text_layer)  # вставляем в самое начало (поверх всех)
-        logger.info("Добавлен новый текстовый слой поверх всех")
-        data["layers"] = new_layers
-        return data, True
+        new_layers.insert(0, text_layer)
+        logger.info("Добавлен текстовый слой, буквы скрыты")
+        return new_layers, True
 
+    # Ничего не нашли
+    return new_layers, False
+
+def replace_text_and_colors(data, new_text, text_color_hex, fill_color_hex, stroke_color_hex, stroke_width=3):
+    text_rgb = hex_to_rgb(text_color_hex)
+    fill_rgb = hex_to_rgb(fill_color_hex)
+    stroke_rgb = hex_to_rgb(stroke_color_hex)
+
+    if "layers" not in data:
+        return data, False
+
+    new_layers, changed = process_layers(
+        data["layers"],
+        new_text,
+        text_rgb,
+        fill_rgb,
+        stroke_rgb,
+        stroke_width
+    )
     data["layers"] = new_layers
-    return data, True
+    return data, changed
 
 def generate_preview(background_color, text, text_color, stroke_color, stroke_width=3):
     img = Image.new('RGBA', (512, 512), background_color)
@@ -234,7 +275,8 @@ def admin_kb():
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main")]
     ])
 
-# ===== ОБРАБОТЧИКИ (без изменений) =====
+# ===== ОБРАБОТЧИКИ =====
+
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     user_id = str(message.from_user.id)
@@ -354,7 +396,7 @@ async def show_preview(event, state):
     with open(file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
     
-    edited, replaced = replace_text_and_colors(
+    edited, changed = replace_text_and_colors(
         data,
         state["text"],
         state["text_color"],
@@ -380,10 +422,10 @@ async def show_preview(event, state):
         f"Цвет заливки: {state['fill_color']}\n"
         f"Цвет обводки: {state['stroke_color']}\n"
     )
-    if replaced:
-        caption += "✅ Текст добавлен/обновлён"
+    if changed:
+        caption += "✅ Изменения применены"
     else:
-        caption += "⚠️ Найден текстовый слой, но он не изменён"
+        caption += "⚠️ Не найдено слоёв для замены — текст будет наложен поверх"
     
     await event.message.answer_photo(
         types.BufferedInputFile(preview_img.getvalue(), filename="preview.png"),
@@ -577,7 +619,7 @@ async def add_lottie(message: Message):
     await message.answer(f"✅ Шаблон {doc.file_name} добавлен!")
 
 async def main():
-    logger.info("✅ БОТ ЗАПУЩЕН! ТЕКСТ ДОБАВЛЯЕТСЯ ПОВЕРХ С ПРАВИЛЬНЫМИ ПАРАМЕТРАМИ ВРЕМЕНИ.")
+    logger.info("✅ БОТ ЗАПУЩЕН! УНИВЕРСАЛЬНЫЙ ПАРСЕР АКТИВЕН.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
